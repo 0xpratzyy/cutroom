@@ -29,37 +29,101 @@ function capFile(c: number) {
 }
 
 type Cam = { x: number; y: number; z: number };
+type Box = { x: number; y: number; width: number; height: number };
+const rects = ((cap as unknown as { rects?: Record<string, Box> }).rects ?? {}) as Record<string, Box>;
+const BASE = 1.2; // film px per window px at zoom 1
+/** Camera that fits a UI element into `fill` of the frame (capped so pixels stay sharp). */
+function fit(name: string, fill: number, fallback: Cam, maxZ = 2.7): Cam {
+  const r = rects[name];
+  if (!r) return fallback;
+  const k = Math.min((W * fill) / r.width, (H * fill) / r.height);
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2, z: Math.min(maxZ, k / BASE) };
+}
+const grow = (c: Cam, by: number): Cam => ({ ...c, z: c.z * by });
 interface Shot {
-  kind: "cap";
   from: number;
   to: number;
   c0: number;
   c1: number;
   cam0: Cam;
   cam1: Cam;
-  num?: string;
-  title: string;
+  /** Small caption inside the shot. */
   sub?: string;
   agent?: boolean;
+  typing?: boolean;
 }
+interface Card {
+  from: number;
+  to: number;
+  num?: string;
+  text: string;
+  bg: string;
+  fg: string;
+  sub?: string;
+}
+const FRAME = fit("frame", 0.92, { x: 740, y: 330, z: 2.0 });
+// The notes column: cards shift as Claude's review list appears above them, so frame the whole column.
+rects.panel = { x: 1104, y: 112, width: 336, height: 560 };
+const PANEL = fit("panel", 0.94, { x: 1272, y: 392, z: 1.6 });
+const cards: Card[] = [
+  { from: 6, to: 6.5, num: "01", text: "Box it.", bg: C.lime, fg: "#0b0a09" },
+  { from: 9.5, to: 10, text: "Claude fixes it.", bg: C.agent, fg: "#0b0a09", sub: "live, over MCP" },
+  { from: 12, to: 12.5, num: "02", text: "Select it.", bg: C.coral, fg: "#fff" },
+  { from: 15, to: 15.5, num: "03", text: "Say it.", bg: "#f2ede6", fg: "#0b0a09" },
+  { from: 19, to: 19.5, text: "All of it. Fixed.", bg: C.agent, fg: "#0b0a09", sub: "while you keep watching" },
+];
 const shots: Shot[] = [
-  { kind: "cap", from: 6, to: 10, c0: ev["annotate-key"] - 0.35, c1: ev["note1-send"] + 0.3, cam0: { x: 790, y: 330, z: 1.8 }, cam1: { x: 810, y: 335, z: 2.1 }, num: "01", title: "Box it.", sub: "Drag over anything in the frame." },
-  { kind: "cap", from: 10, to: 12, c0: ev["note1-send"] + 0.3, c1: ev["agent-resolved-1"] + 1.1, cam0: { x: 985, y: 330, z: 1.3 }, cam1: { x: 1000, y: 330, z: 1.42 }, title: "Claude fixes it.", sub: "Your agent picks up the note over MCP.", agent: true },
-  { kind: "cap", from: 12, to: 15, c0: ev["select-down"] - 0.9, c1: ev["note2-send"] + 0.3, cam0: { x: 520, y: 360, z: 1.3 }, cam1: { x: 545, y: 365, z: 1.4 }, num: "02", title: "Select it.", sub: "Highlight words in the transcript." },
-  { kind: "cap", from: 15, to: 19, c0: ev["voice-down"] - 0.9, c1: ev["voice-down"] + 3.1, cam0: { x: 760, y: 330, z: 1.85 }, cam1: { x: 750, y: 335, z: 2.15 }, num: "03", title: "Say it.", sub: "Hold V and talk over the video." },
-  { kind: "cap", from: 19, to: 22.5, c0: ev["voice-up"] + 0.2, c1: ev["agent-resolved-3"] + 1.0, cam0: { x: 960, y: 360, z: 1.18 }, cam1: { x: 905, y: 340, z: 1.5 }, title: "Claude fixes it.", sub: "Reframed. False start cut. Captions popped.", agent: true },
-  { kind: "cap", from: 26, to: 28, c0: ev["palette"] - 0.1, c1: ev["end"], cam0: { x: 715, y: 230, z: 1.55 }, cam1: { x: 715, y: 230, z: 1.75 }, title: "Or just ask.", sub: "⌘K: any action, or a note for Claude." },
+  // Box it
+  { from: 6.5, to: 8, c0: ev["box-down"] - 0.35, c1: ev["box-up"] + 0.15, cam0: FRAME, cam1: grow(FRAME, 1.06), sub: "Drag over anything in the frame." },
+  { from: 8, to: 9.5, c0: ev["box-up"] + 0.2, c1: ev["note1-send"] + 0.15, cam0: fit("composer1", 0.62, { x: 895, y: 437, z: 2.5 }), cam1: grow(fit("composer1", 0.62, { x: 895, y: 437, z: 2.5 }), 1.07), typing: true },
+  // Claude fixes it
+  { from: 10, to: 11, c0: ev["agent-working-1"] - 0.1, c1: ev["agent-resolved-1"] + 0.3, cam0: PANEL, cam1: grow(PANEL, 1.06), agent: true, sub: "Claude reads the note and edits the project." },
+  { from: 11, to: 12, c0: ev["agent-edit-1"] + 0.1, c1: ev["agent-edit-1"] + 1.0, cam0: grow(FRAME, 0.98), cam1: grow(FRAME, 1.05), agent: true, sub: "Reframed." },
+  // Select it
+  { from: 12.5, to: 14, c0: ev["select-down"] - 0.35, c1: ev["select-up"] + 0.3, cam0: fit("words", 0.55, { x: 160, y: 380, z: 2.6 }), cam1: grow(fit("words", 0.55, { x: 160, y: 380, z: 2.6 }), 1.05), sub: "Highlight words in the transcript." },
+  { from: 14, to: 15, c0: ev["select-up"] + 0.45, c1: ev["note2-send"] + 0.15, cam0: fit("composer2", 0.62, { x: 913, y: 378, z: 2.5 }), cam1: grow(fit("composer2", 0.62, { x: 913, y: 378, z: 2.5 }), 1.06), typing: true },
+  // Say it
+  { from: 15.5, to: 16.1, c0: ev["voice-down"] - 0.15, c1: ev["voice-down"] + 0.45, cam0: { ...fit("mic", 0.1, { x: 856, y: 82, z: 2.7 }), z: 2.7 }, cam1: { ...fit("mic", 0.1, { x: 856, y: 82, z: 2.7 }), z: 2.85 }, sub: "Hold V and talk over the video." },
+  { from: 16.1, to: 19, c0: ev["voice-down"] + 0.45, c1: ev["voice-down"] + 3.35, cam0: FRAME, cam1: grow(FRAME, 1.1), sub: "Hold V and talk over the video." },
+  // All fixed
+  { from: 19.5, to: 21, c0: ev["agent-working-3"] - 0.2, c1: ev["agent-resolved-3"] + 0.45, cam0: PANEL, cam1: grow(PANEL, 1.06), agent: true, sub: "Every note gets a reply." },
+  { from: 21, to: 22.5, c0: ev["agent-resolved-3"] + 0.4, c1: ev["agent-resolved-3"] + 1.9, cam0: FRAME, cam1: grow(FRAME, 1.08), agent: true, sub: "Pop captions, hook title, clean take." },
+  // Or just ask
+  { from: 26, to: 28, c0: ev["palette"] - 0.05, c1: ev["end"], cam0: fit("palette", 0.62, { x: 715, y: 190, z: 2.2 }), cam1: fit("palette", 0.8, { x: 715, y: 190, z: 2.5 }), sub: "⌘K: any action, or just ask Claude." },
 ];
 const BA = { from: 22.5, to: 26 };
-const VOICE_AT = 15 + (ev["voice-down"] + 0.33 - (ev["voice-down"] - 0.9));
+const LIME_END = 33.5;
+/** Film time at which capture time `c` is shown, if any shot shows it. */
+function filmAt(c: number): number | null {
+  for (const s of shots) if (c >= s.c0 && c <= s.c1) return s.from + ((c - s.c0) / (s.c1 - s.c0)) * (s.to - s.from);
+  return null;
+}
+const sayShot = shots.find((s) => s.from === 15.5)!;
+const VOICE_AT = sayShot.from + (ev["voice-down"] + 0.33 - sayShot.c0);
 
-// ---------------------------------------------------------------- dialogue cues for music.mts
+// ---------------------------------------------------------------- sound cues for music.mts
+const sfx: { name: string; at: number; gain?: number; dur?: number }[] = [];
+for (const at of [0, 0.5, 1.0]) sfx.push({ name: "slam", at, gain: 0.9 });
+for (const c of cards) sfx.push({ name: "slam", at: c.from });
+for (const at of [4, 6, 30]) sfx.push({ name: "impact", at });
+sfx.push({ name: "slam", at: LIME_END });
+for (const s of shots) if (!cards.some((c) => Math.abs(c.to - s.from) < 0.01)) sfx.push({ name: "whoosh", at: s.from, gain: 0.7 });
+for (const at of [BA.from, 28]) sfx.push({ name: "whoosh", at, gain: 0.8 });
+for (const s of shots.filter((s) => s.typing)) sfx.push({ name: "typing", at: s.from + 0.05, dur: s.to - s.from - 0.15, gain: 0.55 });
+for (const [e, name] of [["box-down", "click"], ["select-down", "click"], ["note1-send", "send"], ["note2-send", "send"], ["voice-down", "mic"], ["agent-resolved-1", "chime"], ["agent-resolved-2", "chime"], ["agent-resolved-3", "chime"]] as const) {
+  const at = ev[e] !== undefined ? filmAt(ev[e]) : null;
+  if (at !== null) sfx.push({ name, at, gain: name === "click" ? 0.9 : 0.75 });
+}
+sfx.push({ name: "riser", at: 28, gain: 0.8 });
 writeFileSync(
   join(OUT, "cues.json"),
-  JSON.stringify([
-    { file: join(OUT, "capture/voice.wav"), at: VOICE_AT, from: 0.3, dur: 1.6, gain: 1.15 },
-    { file: join(OUT, "after.mp4"), at: BA.from, dur: BA.to - BA.from - 0.25, gain: 1.0 },
-  ]),
+  JSON.stringify({
+    dialogue: [
+      { file: join(OUT, "capture/voice.wav"), at: VOICE_AT, from: 0.3, dur: 1.9, gain: 1.15 },
+      { file: join(OUT, "after.mp4"), at: BA.from, dur: BA.to - BA.from - 0.2, gain: 1.0 },
+    ],
+    sfx: sfx.sort((a, b) => a.at - b.at),
+  }),
 );
 if (process.argv.includes("--cues")) process.exit(0);
 
@@ -195,7 +259,7 @@ function sceneStop(t: number) {
   x.scale(zoom, zoom);
   x.translate(-W / 2, -H / 2);
   words.forEach((w, i) => {
-    const at = 0.5 + i * 0.5;
+    const at = i * 0.5;
     const u = prog(t, at, 0.22);
     if (u > 0) {
       const s = lerp(1.35, 1, outBack(u));
@@ -343,7 +407,6 @@ function scenePoint(t: number) {
 }
 
 // Captured editor in a window, with camera.
-const BASE = 1.2; // film px per window px at zoom 1
 async function sceneCapture(t: number, s: Shot) {
   backdrop(t);
   const u = (t - s.from) / (s.to - s.from);
@@ -351,13 +414,15 @@ async function sceneCapture(t: number, s: Shot) {
   const e = inOut(u);
   let cam = { x: lerp(s.cam0.x, s.cam1.x, e), y: lerp(s.cam0.y, s.cam1.y, e), z: lerp(s.cam0.z, s.cam1.z, e) };
   // Punch-in on the cut.
-  const punch = 1 + 0.07 * Math.pow(1 - prog(t, s.from, 0.35), 3);
+  const punch = 1 + 0.05 * Math.pow(1 - prog(t, s.from, 0.3), 3);
   cam = { ...cam, z: cam.z * punch };
   const k = BASE * cam.z;
   // Keep the view inside the window.
   const halfW = W / 2 / k, halfH = H / 2 / k;
-  cam.x = halfW * 2 < 1440 ? clamp(cam.x, halfW, 1440 - halfW) : 720;
-  cam.y = halfH * 2 < 900 ? clamp(cam.y, halfH, 900 - halfH) : 450;
+  // Keep the view on the window, letting a little of the desk show past its edges.
+  const over = 70;
+  cam.x = halfW * 2 < 1440 + over * 2 ? clamp(cam.x, halfW - over, 1440 + over - halfW) : 720;
+  cam.y = halfH * 2 < 900 + over * 2 ? clamp(cam.y, halfH - over, 900 + over - halfH) : 450;
   const frame = await img(capFile(c));
   x.save();
   x.translate(W / 2, H / 2);
@@ -381,7 +446,7 @@ async function sceneCapture(t: number, s: Shot) {
   rrect(0, 0, 1440, 900, 16);
   x.stroke();
   x.restore();
-  if (s.num === "03") voiceCaption(t);
+  if (s.from === 15.5 || s.from === 16.1) voiceCaption(t);
   label(t, s);
 }
 // The voice note, as it's spoken.
@@ -423,40 +488,88 @@ function voiceCaption(t: number) {
   x.restore();
 }
 function label(t: number, s: Shot) {
+  if (!s.sub) return;
   const lt = t - s.from;
-  const g = x.createLinearGradient(0, H * 0.55, 0, H);
+  const g = x.createLinearGradient(0, H * 0.7, 0, H);
   g.addColorStop(0, "rgba(8,7,6,0)");
-  g.addColorStop(1, "rgba(8,7,6,0.92)");
+  g.addColorStop(1, "rgba(8,7,6,0.75)");
   x.fillStyle = g;
-  x.fillRect(0, H * 0.55, W, H * 0.45);
-  const u = outCubic(prog(lt, 0.05, 0.35));
-  const out = s.to - t < 0.12 ? (s.to - t) / 0.12 : 1;
+  x.fillRect(0, H * 0.7, W, H * 0.3);
+  const u = outCubic(prog(lt, 0.04, 0.25));
   x.save();
-  x.globalAlpha = u * out;
-  x.translate(0, (1 - u) * 40);
-  let px = 96;
-  const base = H - 128;
-  if (s.num || s.agent) {
-    font(34, 800, "SFMono");
-    const chip = s.agent ? "MCP" : s.num!;
-    const cw = x.measureText(chip).width + 40;
-    rrect(px, base - 72, cw, 58, 29);
-    x.fillStyle = s.agent ? C.agent : C.lime;
+  x.globalAlpha = u;
+  x.translate(0, (1 - u) * 24);
+  font(40, 600);
+  const tw = x.measureText(s.sub).width;
+  const chipW = s.agent ? 104 : 0;
+  const w = tw + 64 + chipW, h = 76, px = 80, py = H - 80 - h;
+  rrect(px, py, w, h, h / 2);
+  x.fillStyle = "rgba(18,16,14,0.88)";
+  x.fill();
+  x.strokeStyle = "rgba(255,255,255,0.08)";
+  x.lineWidth = 1.5;
+  x.stroke();
+  if (s.agent) {
+    rrect(px + 14, py + 14, 92, 48, 24);
+    x.fillStyle = C.agent;
     x.fill();
+    font(26, 800, "SFMono");
     x.fillStyle = "#0b0a09";
-    x.fillText(chip, px + 20, base - 31);
-    px += cw + 26;
+    x.fillText("MCP", px + 34, py + 47);
   }
-  font(104, 800);
-  track(-1.5);
+  font(40, 600);
   x.fillStyle = C.text;
-  x.fillText(s.title, px, base);
+  x.fillText(s.sub, px + 32 + chipW, py + 52);
+  x.restore();
+}
+
+// Full-bleed beat card (Arc-style), slammed in on the beat.
+function sceneCard(t: number, c: Card) {
+  const lt = t - c.from;
+  x.fillStyle = c.bg;
+  x.fillRect(0, 0, W, H);
+  const u = outCubic(prog(lt, 0, 0.14));
+  const s = lerp(1.18, 1, u) * (1 + lt * 0.06);
+  x.save();
+  x.translate(W / 2, H / 2);
+  x.scale(s, s);
+  font(c.text.length > 12 ? 190 : 250, 800);
+  track(-6);
+  x.fillStyle = c.fg;
+  centered(c.text, 0, c.sub ? 50 : 86);
   track(0);
-  if (s.sub) {
-    font(38, 500);
-    x.fillStyle = "#cfc9c1";
-    x.fillText(s.sub, 100, base + 66);
+  if (c.num) {
+    font(44, 700, "SFMono");
+    x.globalAlpha = 0.6;
+    centered(c.num, 0, -150);
   }
+  if (c.sub) {
+    font(48, 600, "SFMono");
+    x.globalAlpha = 0.7;
+    centered(c.sub, 0, 150);
+  }
+  x.restore();
+}
+
+// Last frame: the command on a lime card.
+function sceneLime(t: number) {
+  const lt = t - LIME_END;
+  x.fillStyle = C.lime;
+  x.fillRect(0, 0, W, H);
+  const u = outCubic(prog(lt, 0, 0.16));
+  x.save();
+  x.translate(W / 2, H / 2);
+  const s = lerp(1.15, 1, u) * (1 + lt * 0.02);
+  x.scale(s, s);
+  x.drawImage(icon, -70, -300, 140, 140);
+  font(150, 700, "SFMono");
+  track(-4);
+  x.fillStyle = "#0b0a09";
+  centered("npx cutroom", 0, 40);
+  track(0);
+  font(44, 600);
+  x.globalAlpha = 0.75;
+  centered("github.com/0xpratzyy/cutroom", 0, 160);
   x.restore();
 }
 
@@ -642,10 +755,6 @@ function sceneEnd(t: number) {
   centered("github.com/0xpratzyy/cutroom   ·   open source   ·   runs on your machine", W / 2, 900);
   x.restore();
   x.globalAlpha = 1;
-  if (t > 34.4) {
-    x.fillStyle = `rgba(0,0,0,${clamp((t - 34.4) / 0.6)})`;
-    x.fillRect(0, 0, W, H);
-  }
 }
 
 async function render(t: number) {
@@ -656,7 +765,9 @@ async function render(t: number) {
   else if (t < 6) scenePoint(t);
   else if (t >= BA.from && t < BA.to) await sceneBA(t);
   else if (t >= 28 && t < 30) sceneFeatures(t);
+  else if (t >= LIME_END) sceneLime(t);
   else if (t >= 30) sceneEnd(t);
+  else if (cards.some((c) => t >= c.from && t < c.to)) sceneCard(t, cards.find((c) => t >= c.from && t < c.to)!);
   else {
     const s = shots.find((s) => t >= s.from && t < s.to)!;
     await sceneCapture(t, s);

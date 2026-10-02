@@ -1,16 +1,17 @@
 # Launch film
 
-Scripts that produce the 35-second cutroom launch video from the real editor.
+Scripts that produce the 35-second cutroom launch video from the real editor: a scripted user annotates, comments and leaves a voice note while a real MCP client (standing in for Claude) fixes each note. [BLUEPRINT.md](BLUEPRINT.md) has the editing rules, measured with [dissect](https://github.com/0xpratzyy/dissect) against Raycast, Arc and Linear launch films.
 
 ```bash
-npm run build
-npx tsx launch/speaker.mts                       # demo talking head (TTS + illustrated presenter)
-CUTROOM_HOME=/tmp/cr-home node dist/cli.js init /tmp/cr-demo launch/out/speaker.webm
-CUTROOM_HOME=/tmp/cr-home node dist/cli.js edit --project /tmp/cr-demo '[{"op":"set_settings","aspect":"9:16"}]'
-CUTROOM_HOME=/tmp/cr-home npx tsx launch/capture.mts /tmp/cr-demo   # scripted user + MCP agent, screencast
-(cd /tmp/cr-demo && CUTROOM_HOME=/tmp/cr-home node "$OLDPWD/dist/cli.js" export --quality high --out "$OLDPWD/launch/out/after.mp4")
-npx tsx launch/film.mts --cues && npx tsx launch/music.mts && npx tsx launch/film.mts
-ffmpeg -i launch/out/film-video.mp4 -i launch/out/soundtrack.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 256k -shortest launch/out/cutroom-launch.mp4
+bash launch/build.sh        # -> launch/out/cutroom-launch.mp4
 ```
 
-Needs macOS (`say`, SF fonts), ffmpeg and a transcription backend (`cutroom doctor`).
+| Script | Does |
+|---|---|
+| `eleven.mts` | ElevenLabs presenter voice, voice note and sound effects (needs `ELEVENLABS_API_KEY` in the environment or `launch/.env.local`) |
+| `speaker.mts` | The demo talking head: an illustrated presenter lip-synced to the voice |
+| `capture.mts` | Drives the editor in headless Chromium and records it, with Claude editing over MCP |
+| `film.mts` | Composites beat cards, camera moves and macro close-ups, the before/after and the end card; writes sound cues |
+| `music.mts` | 120 BPM synthesized score plus dialogue and effects, ducked and mastered to −12 LUFS |
+
+Needs macOS (`say` fallback, SF fonts), ffmpeg and a transcription backend (`cutroom doctor`). Without an ElevenLabs key it falls back to `say` and synthesized effects.

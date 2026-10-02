@@ -14,3 +14,4 @@ test/fixtures/*.aiff
 .DS_Store
 assets/brand/mark-*.svg
 launch/out/
+launch/.env.local

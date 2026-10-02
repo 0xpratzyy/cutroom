@@ -4,7 +4,7 @@
 // timestamps; launch/out/capture/frames.json marks each beat for the compositor.
 // Usage: npx tsx launch/capture.mts <project-dir>   (run speaker.mts + init the project first)
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium } from "@playwright/test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -21,11 +21,25 @@ mkdirSync(OUT, { recursive: true });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const events: { name: string; t: number }[] = [];
 const mark = (name: string) => (events.push({ name, t: Date.now() / 1000 }), console.log("·", name));
+// Where UI elements sit (CSS px in the 1440×900 window), so the film can frame macro shots.
+type Box = { x: number; y: number; width: number; height: number };
+const rects: Record<string, Box> = {};
+let pageRef: import("@playwright/test").Page | null = null;
+async function keep(name: string, sel: string | import("@playwright/test").Locator) {
+  const loc = typeof sel === "string" ? pageRef!.locator(sel).first() : sel;
+  const b = await loc.boundingBox({ timeout: 400 }).catch(() => null);
+  if (b) rects[name] = b;
+}
 
 // The "user's" voice note, fed to Chromium as a fake microphone.
 const voice = join(OUT, "voice.wav");
-execFileSync("say", ["-v", "Samantha", "-r", "175", "-o", join(OUT, "voice.aiff"), "[[slnc 300]] Make the captions pop. [[slnc 5000]]"]);
-execFileSync("ffmpeg", ["-v", "error", "-y", "-i", join(OUT, "voice.aiff"), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", voice]);
+const elevenNote = join(ROOT, "launch/out/eleven/voicenote.mp3");
+if (existsSync(elevenNote)) {
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", elevenNote, "-af", "adelay=300:all=1,apad=pad_dur=5", "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", voice]);
+} else {
+  execFileSync("say", ["-v", "Samantha", "-r", "175", "-o", join(OUT, "voice.aiff"), "[[slnc 300]] Make the captions pop. [[slnc 5000]]"]);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", join(OUT, "voice.aiff"), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", voice]);
+}
 
 // ---------------------------------------------------------------- editor
 const server = spawn(process.execPath, [CLI, "open", PROJECT, "--no-browser", "--port", String(PORT)], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -45,6 +59,15 @@ const call = async (name: string, args: Record<string, unknown> = {}) => {
   return r.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
 };
 await call("open_project", { path: PROJECT });
+// The first "So the idea is..." in the transcript: the false start the user selects.
+function falseStart() {
+  const words: { text: string }[] = JSON.parse(readFileSync(join(PROJECT, ".cutroom/cache/m1/transcript.json"), "utf8")).words;
+  const norm = (w: string) => w.toLowerCase().replace(/[^a-z']/g, "");
+  for (let i = 0; i + 3 < words.length; i++) {
+    if (["so", "the", "idea", "is"].every((w, k) => norm(words[i + k].text) === w)) return { from: i, to: i + 3 };
+  }
+  throw new Error("false start not found in transcript");
+}
 const handled = new Set<number>();
 let agentDone = false;
 const agent = (async () => {
@@ -63,7 +86,8 @@ const agent = (async () => {
         await call("edit", { ops: [{ op: "set_focus", x: 0.3125, y: 0.5 }], label: "center the speaker" });
         reply = "Reframed the shot so you're centered.";
       } else if (/false start|cut/.test(note)) {
-        await call("edit", { ops: [{ op: "remove_words", mediaId: "m1", from: 11, to: 14 }, { op: "remove_fillers" }], label: "cut the false start" });
+        const fs = falseStart();
+await call("edit", { ops: [{ op: "remove_words", mediaId: "m1", from: fs.from, to: fs.to }, { op: "remove_fillers" }], label: "cut the false start" });
         reply = "Cut the false start and the “umm”.";
       } else {
         await call("edit", { ops: [{ op: "set_captions", preset: "pop", emphasisWords: ["point", "wrong", "fixes", "simple", "cool"] }, { op: "set_hook", text: "AI just fixes it", start: 0, duration: 2.5 }], label: "pop captions" });
@@ -73,6 +97,8 @@ const agent = (async () => {
       await sleep(400);
       await call("update_feedback", { id: String(f.n), status: "resolved", reply });
       mark(`agent-resolved-${f.n}`);
+      await sleep(250);
+      if (pageRef) await keep(`card${f.n}`, pageRef.locator(".fb-card", { hasText: f.note.slice(0, 20) }).first());
     }
   }
   agentDone = true;
@@ -126,6 +152,7 @@ await ctx.addInitScript(`var __name = (f) => f; (${(() => {
   });
 }).toString()})()`);
 const page = await ctx.newPage();
+pageRef = page;
 await page.goto(`http://localhost:${PORT}/`);
 await page.waitForSelector("[data-i]", { timeout: 20000 });
 await sleep(2500);
@@ -137,7 +164,7 @@ cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: 
   const file = `f${String(frames.length).padStart(5, "0")}.jpg`;
   frames.push({ file, t: f.metadata.timestamp });
   writeFileSync(join(OUT, file), Buffer.from(f.data, "base64"));
-  void cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId });
+  cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
 });
 await cdp.send("Page.startScreencast", { format: "jpeg", quality: 92, maxWidth: 2880, maxHeight: 1800, everyNthFrame: 1 });
 
@@ -188,7 +215,10 @@ await glide(x1, y1, 750);
 await page.mouse.up();
 mark("box-up");
 await sleep(350);
+await keep("frame", ".frame");
+await keep("box", ".annot-layer .marker.draft");
 await page.keyboard.type("speaker's cut off, center them", { delay: 42 });
+await keep("composer1", ".composer");
 await sleep(300);
 mark("note1-send");
 await page.keyboard.press("Meta+Enter");
@@ -197,8 +227,9 @@ await page.keyboard.press("Escape");
 await sleep(400);
 
 // 2 — Select it (drag across the false start in the transcript)
-const w11 = (await page.locator('[data-i="11"]').first().boundingBox())!;
-const w14 = (await page.locator('[data-i="14"]').first().boundingBox())!;
+const fsw = falseStart();
+const w11 = (await page.locator(`[data-i="${fsw.from}"]`).first().boundingBox())!;
+const w14 = (await page.locator(`[data-i="${fsw.to}"]`).first().boundingBox())!;
 await glide(w11.x + 1, w11.y + w11.height / 2, 800);
 mark("select-down");
 await page.mouse.down();
@@ -208,7 +239,9 @@ mark("select-up");
 await sleep(500);
 await page.keyboard.press("c");
 await sleep(350);
+rects.words = { x: w11.x, y: Math.min(w11.y, w14.y), width: w14.x + w14.width - w11.x, height: Math.max(w11.y + w11.height, w14.y + w14.height) - Math.min(w11.y, w14.y) };
 await page.keyboard.type("cut the false start", { delay: 45 });
+await keep("composer2", ".composer");
 await sleep(250);
 mark("note2-send");
 await page.keyboard.press("Meta+Enter");
@@ -219,6 +252,7 @@ const f2 = await rect(".frame");
 await glide(f2.x + f2.width * 0.5, f2.y + f2.height * 0.78, 700);
 await page.keyboard.press("Space");
 await sleep(400);
+await keep("mic", '.tool[title^="Hold to talk"]');
 mark("voice-down");
 await page.keyboard.down("v");
 await sleep(2900);
@@ -235,6 +269,7 @@ await sleep(1500);
 // 4 — Review: Before / After
 const before = page.locator(".review-bar button", { hasText: /before/i }).first();
 const after = page.locator(".review-bar button", { hasText: /after/i }).first();
+await keep("review", ".review-bar");
 if (await before.count()) {
   const b = (await before.boundingBox())!;
   await glide(b.x + b.width / 2, b.y + b.height / 2, 700);
@@ -262,11 +297,12 @@ mark("palette");
 await page.keyboard.press("Meta+k");
 await sleep(500);
 await page.keyboard.type("make the intro punchier", { delay: 50 });
+await keep("palette", ".palette");
 await sleep(1600);
 mark("end");
 
 await cdp.send("Page.stopScreencast");
-writeFileSync(join(OUT, "frames.json"), JSON.stringify({ frames, events }, null, 1));
+writeFileSync(join(OUT, "frames.json"), JSON.stringify({ frames, events, rects }, null, 1));
 console.log(`${frames.length} frames over ${(frames.at(-1)!.t - frames[0].t).toFixed(1)}s`);
 await browser.close();
 await client.close();

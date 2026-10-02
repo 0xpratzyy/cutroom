@@ -1,7 +1,8 @@
 // Synthesizes the launch film's soundtrack (120 BPM, A minor) and mixes in the dialogue cues
 // the compositor wrote (launch/out/cues.json), ducking the music under them.
 // Usage: npx tsx launch/music.mts  ->  launch/out/soundtrack.wav
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const SR = 48000;
@@ -177,7 +178,7 @@ function bass(t: number, midi: number, len: number, gain = 1) {
 // ---------------------------------------------------------------- arrangement
 // Intro: three word hits.
 pad(0, 2.0, 0.7, 700);
-for (const t of [0.5, 1.0, 1.5]) {
+for (const t of [0, 0.5, 1.0]) {
   kick(t, 0.9);
   clap(t, 0.8, 0.5);
 }
@@ -224,7 +225,6 @@ function groove(t0: number, t1: number, opts: { arp?: boolean; light?: boolean }
 impact(6.0, 0.8);
 groove(6.0, 28.0);
 pad(6.0, 29.75, 1);
-for (const t of [10, 12, 15, 19, 22.5, 26]) whoosh(t, 0.9);
 // 28–30: feature words, a clap on every word, then a stop.
 for (let t = 28; t < 29.75; t += 0.25) {
   kick(t, t % 0.5 === 0 ? 0.9 : 0.5);
@@ -267,34 +267,69 @@ function reverb() {
     R[n] += (outR * 0.7 + mono * 0.3) * 0.12;
   }
 }
-reverb();
-
-// ---------------------------------------------------------------- dialogue cues + ducking
+// ---------------------------------------------------------------- cues: dialogue + sound effects
 type Cue = { file: string; at: number; from?: number; dur?: number; gain?: number };
-const cues: Cue[] = existsSync("launch/out/cues.json") ? JSON.parse(readFileSync("launch/out/cues.json", "utf8")) : [];
+type Sfx = { name: string; at: number; gain?: number; dur?: number };
+const cueFile = existsSync("launch/out/cues.json") ? JSON.parse(readFileSync("launch/out/cues.json", "utf8")) : {};
+const dialogue: Cue[] = Array.isArray(cueFile) ? cueFile : (cueFile.dialogue ?? []);
+const effects: Sfx[] = cueFile.sfx ?? [];
+function decode(file: string, from?: number, dur?: number) {
+  const raw = execFileSync("ffmpeg", ["-v", "error", ...(from ? ["-ss", String(from)] : []), ...(dur ? ["-t", String(dur)] : []), "-i", file, "-ac", "1", "-ar", String(SR), "-f", "f32le", "-"], { maxBuffer: 1 << 28 });
+  return new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
+}
 const dlg = new Float32Array(N);
-for (const c of cues) {
-  const raw = execFileSync("ffmpeg", ["-v", "error", ...(c.from ? ["-ss", String(c.from)] : []), ...(c.dur ? ["-t", String(c.dur)] : []), "-i", c.file, "-ac", "1", "-ar", String(SR), "-f", "f32le", "-"], { maxBuffer: 1 << 28 });
-  const pcm = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
+for (const c of dialogue) {
+  const pcm = decode(c.file, c.from, c.dur);
   const fade = S(0.05);
   for (let i = 0; i < pcm.length; i++) {
-    const g = Math.min(1, i / fade, (pcm.length - i) / fade) * (c.gain ?? 1);
     const j = S(c.at) + i;
-    if (j < N) dlg[j] += pcm[i] * g;
+    if (j < N) dlg[j] += pcm[i] * Math.min(1, i / fade, (pcm.length - i) / fade) * (c.gain ?? 1);
   }
 }
-// Envelope follower on the dialogue drives the duck.
+// Sound effects: ElevenLabs renders from launch/eleven.mts when present, synthesized otherwise.
+const ELEVEN = "launch/out/eleven/sfx";
+const sfxCache = new Map<string, Float32Array | null>();
+const usedEleven = new Set<string>();
+for (const e of effects) {
+  const file = join(ELEVEN, `${e.name}.mp3`);
+  if (!sfxCache.has(e.name)) sfxCache.set(e.name, existsSync(file) ? decode(file) : null);
+  const pcm = sfxCache.get(e.name);
+  const g = e.gain ?? 1;
+  if (pcm) {
+    usedEleven.add(e.name);
+    const len = e.dur ? Math.min(pcm.length, S(e.dur)) : pcm.length;
+    const fade = S(0.04);
+    // Whooshes peak at their middle: lead in so the peak lands on the cut.
+    const lead = e.name === "whoosh" ? Math.floor(len * 0.45) : 0;
+    for (let i = 0; i < len; i++) {
+      const v = pcm[i] * g * 0.8 * (e.dur ? Math.min(1, (len - i) / fade) : 1);
+      add(S(e.at) - lead + i, v, 0, e.name === "chime" || e.name === "send" ? 0.25 : 0.1);
+    }
+  } else if (e.name === "whoosh") whoosh(e.at, g);
+  else if (e.name === "impact") impact(e.at, g * 0.8);
+  else if (e.name === "slam") (kick(e.at, 0.7 * g), clap(e.at, 0.8 * g, 0.4));
+  else if (e.name === "riser") riser(e.at, e.at + 1.75, g);
+  else if (e.name === "click") hat(e.at, 2.2 * g, false, 0);
+  else if (e.name === "send") blip(e.at, 84, g);
+  else if (e.name === "chime") (blip(e.at, 88, g), blip(e.at + 0.09, 95, g));
+  else if (e.name === "mic") blip(e.at, 79, 0.6 * g);
+  else if (e.name === "typing") for (let t = e.at; t < e.at + (e.dur ?? 1); t += 0.06 + Math.abs(rnd()) * 0.05) hat(t, 0.9 * g, false, rnd() * 0.3);
+}
+reverb();
+
+// Dialogue ducks the music ~14 dB, with 30 ms of look-ahead.
 let env = 0;
+const look = S(0.03);
 for (let n = 0; n < N; n++) {
-  const a = Math.abs(dlg[n]);
-  env = a > env ? env + (a - env) * 0.01 : env * 0.99993;
-  const duck = 1 - Math.min(0.72, env * 6);
-  L[n] = L[n] * duck + dlg[n] * 0.95;
-  R[n] = R[n] * duck + dlg[n] * 0.95;
+  const a = Math.abs(dlg[Math.min(N - 1, n + look)]);
+  env = a > env ? env + (a - env) * 0.02 : env * 0.99994;
+  const duck = 1 - 0.8 * Math.min(1, env * 14);
+  L[n] = L[n] * duck + dlg[n] * 1.1;
+  R[n] = R[n] * duck + dlg[n] * 1.1;
 }
 
 // ---------------------------------------------------------------- master
-const fadeOut = (t: number) => (t < 33.5 ? 1 : Math.max(0, 1 - (t - 33.5) / 2));
+const fadeOut = (t: number) => (t < 34.3 ? 1 : Math.max(0, 1 - (t - 34.3) / 1.2));
 let peak = 0;
 for (let n = 0; n < N; n++) {
   const f = fadeOut(n / SR);
@@ -311,5 +346,10 @@ for (let n = 0; n < N; n++) {
   out.writeInt16LE(Math.round(Math.max(-1, Math.min(1, L[n] * norm)) * 32767), 44 + n * 4);
   out.writeInt16LE(Math.round(Math.max(-1, Math.min(1, R[n] * norm)) * 32767), 46 + n * 4);
 }
-writeFileSync("launch/out/soundtrack.wav", out);
-console.log(`soundtrack.wav ${DUR}s, ${cues.length} dialogue cues`);
+writeFileSync("launch/out/soundtrack-raw.wav", out);
+// Master: two-pass loudness normalisation to -12 LUFS, true peak <= -2 dBFS (AAC adds ~1 dB).
+const target = "I=-12:TP=-2:LRA=9";
+const pass1 = spawnSync("ffmpeg", ["-hide_banner", "-i", "launch/out/soundtrack-raw.wav", "-af", `loudnorm=${target}:print_format=json`, "-f", "null", "-"], { encoding: "utf8" }).stderr;
+const m = JSON.parse(/\{[^{}]*"input_i"[^{}]*\}/.exec(pass1)![0]);
+execFileSync("ffmpeg", ["-v", "error", "-y", "-i", "launch/out/soundtrack-raw.wav", "-af", `loudnorm=${target}:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true,aresample=48000`, "-c:a", "pcm_s16le", "launch/out/soundtrack.wav"]);
+console.log(`soundtrack.wav ${DUR}s · ${dialogue.length} dialogue cues · ${effects.length} effects (${usedEleven.size ? `ElevenLabs: ${[...usedEleven].join(", ")}` : "synthesized"}) · input ${m.input_i} LUFS`);

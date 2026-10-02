@@ -4,7 +4,7 @@
 // Usage: npx tsx launch/speaker.mts   ->  launch/out/speaker.webm
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 
 const OUT = "launch/out";
@@ -12,7 +12,10 @@ mkdirSync(OUT, { recursive: true });
 const W = 1920, H = 1080, FPS = 30;
 const LINE = "Hey, I'm Reed. [[slnc 350]] Um, today I wanna show you something cool. [[slnc 700]] So the idea is... [[slnc 600]] so the idea is really simple. [[slnc 300]] You point at what's wrong, and the AI just fixes it. [[slnc 500]] Let's go.";
 
-execFileSync("say", ["-v", "Reed (English (US))", "-r", "185", "-o", `${OUT}/speaker.aiff`, LINE]);
+// The presenter's voice: ElevenLabs when launch/eleven.mts has run, else macOS `say`.
+const eleven = "launch/out/eleven/speaker.mp3";
+if (existsSync(eleven)) execFileSync("ffmpeg", ["-v", "error", "-y", "-i", eleven, "-af", "adelay=300:all=1,apad=pad_dur=0.4", `${OUT}/speaker.aiff`]);
+else execFileSync("say", ["-v", "Reed (English (US))", "-r", "185", "-o", `${OUT}/speaker.aiff`, LINE]);
 const pcm = execFileSync("ffmpeg", ["-v", "error", "-i", `${OUT}/speaker.aiff`, "-ac", "1", "-ar", "48000", "-f", "s16le", "-"], { maxBuffer: 1 << 28 });
 const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2);
 const dur = samples.length / 48000 + 0.6;
