@@ -3321,3 +3321,19 @@ button.coral {
   font-size: 11.5px;
   color: var(--text-3);
 }
+
+.brand-btn {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 10px;
+  background: transparent;
+}
+.brand-btn img {
+  display: block;
+  margin: auto;
+  filter: drop-shadow(0 2px 6px rgba(255, 92, 92, 0.25));
+}
+.brand-btn:hover:not(:disabled) {
+  background: var(--s2);
+}

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/brand/banner.png" alt="cutroom: Point at it. Claude fixes it." width="100%"></p>
+
 # cutroom
 
 **An open-source, local-first video editor that AI agents can actually use.** Point at what's wrong in the video and Claude fixes it.

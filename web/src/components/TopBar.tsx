@@ -39,10 +39,8 @@ export function TitleBar() {
 
   return (
     <div className="titlebar">
-      <button className="round" title="cutroom" onClick={() => openPanel("feedback")}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-          <path d="M3 10.5L12 3l9 7.5V21h-6v-6H9v6H3z" />
-        </svg>
+      <button className="brand-btn" title="cutroom" onClick={() => openPanel("feedback")}>
+        <img src="/icon-128.png" alt="cutroom" width="30" height="30" />
       </button>
       <div className="title-sep" />
       <div className="doc-tab">
