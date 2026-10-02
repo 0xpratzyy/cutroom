@@ -13,3 +13,4 @@ test/fixtures/*.f32
 test/fixtures/*.aiff
 .DS_Store
 assets/brand/mark-*.svg
+launch/out/
