@@ -351,5 +351,5 @@ writeFileSync("launch/out/soundtrack-raw.wav", out);
 const target = "I=-12:TP=-2:LRA=9";
 const pass1 = spawnSync("ffmpeg", ["-hide_banner", "-i", "launch/out/soundtrack-raw.wav", "-af", `loudnorm=${target}:print_format=json`, "-f", "null", "-"], { encoding: "utf8" }).stderr;
 const m = JSON.parse(/\{[^{}]*"input_i"[^{}]*\}/.exec(pass1)![0]);
-execFileSync("ffmpeg", ["-v", "error", "-y", "-i", "launch/out/soundtrack-raw.wav", "-af", `loudnorm=${target}:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true,aresample=48000`, "-c:a", "pcm_s16le", "launch/out/soundtrack.wav"]);
+execFileSync("ffmpeg", ["-v", "error", "-y", "-i", "launch/out/soundtrack-raw.wav", "-af", `loudnorm=${target}:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true,aresample=192000,alimiter=limit=0.72:level=false:attack=1:release=60,aresample=48000`, "-c:a", "pcm_s16le", "launch/out/soundtrack.wav"]);
 console.log(`soundtrack.wav ${DUR}s · ${dialogue.length} dialogue cues · ${effects.length} effects (${usedEleven.size ? `ElevenLabs: ${[...usedEleven].join(", ")}` : "synthesized"}) · input ${m.input_i} LUFS`);
