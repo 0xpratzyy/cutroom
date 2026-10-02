@@ -2,6 +2,7 @@
 # Generates synthetic test media: a "talking head" (test pattern + speech with pauses
 # and filler words) and a silent b-roll clip. Speech uses macOS `say`, or espeak-ng elsewhere.
 set -euo pipefail
+mkdir -p "$(dirname "$0")/../test/fixtures"
 cd "$(dirname "$0")/../test/fixtures"
 TEXT="Hey everyone, welcome back to the channel. [[slnc 1400]] Um, today I want to talk about, uh, how to edit videos with an AI agent. [[slnc 1800]] So the idea is pretty simple. [[slnc 900]] You record yourself talking, and the agent cuts out the silences, um, removes the filler words, and adds captions. [[slnc 1500]] Uh, let's get into it."
 if command -v say >/dev/null; then
