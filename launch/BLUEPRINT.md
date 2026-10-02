@@ -65,3 +65,13 @@ v4 keeps the story and drops the gimmicks:
 - **Then** "Video editor. 0 timelines." and the end card with the app icon and `npx cutroom`.
 - **Type:** blur-in reveals with expo easing; nothing bounces.
 - **Sound:** no voice anywhere. A 100 BPM felt-piano score with a sub pulse, mastered to −14 LUFS.
+
+## v5: slower, and says what it is
+
+Feedback on v4: 12–25 s went by too fast, and the film never said cutroom is an MCP editor for Claude.
+- **What it is (8.4–12 s):** a new beat, "cutroom is a video editor built for Claude. You point at what's wrong. Claude makes the edit, over MCP.", with a small cutroom ⟷ MCP ⟷ Claude diagram.
+- **The product runs about 20 s instead of 13:** user turns at 1.1×, Claude's turns in real time, each beat as two calm shots.
+  - What you do: the full editor.
+  - What Claude does: the editor beside a "Claude · connected to cutroom over MCP" panel streaming the real tool calls (`wait_for_feedback`, `update_feedback → working`, `edit set_focus` / `remove_words` / `set_captions`, `→ resolved`) in sync with the picture.
+- **The capture runs the turns in sequence:** the user waits for Claude to resolve each note before the next action, so no shot shows two things at once.
+- **The end card shows the setup command:** `claude mcp add cutroom -- npx -y cutroom mcp`.

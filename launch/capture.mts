@@ -72,6 +72,13 @@ function falseStart() {
   throw new Error("nothing to cut in the transcript");
 }
 const handled = new Set<number>();
+const resolved = new Set<number>();
+/** The user waits for Claude to finish a note before the next one, so each turn reads on its own. */
+async function afterResolved(n: number, settle = 1300) {
+  const t = Date.now();
+  while (!resolved.has(n) && Date.now() - t < 60000) await sleep(100);
+  await sleep(settle);
+}
 let agentDone = false;
 const agent = (async () => {
   while (handled.size < 3) {
@@ -100,6 +107,7 @@ await call("edit", { ops: [{ op: "remove_words", mediaId: "m1", from: fs.from, t
       await sleep(400);
       await call("update_feedback", { id: String(f.n), status: "resolved", reply });
       mark(`agent-resolved-${f.n}`);
+      resolved.add(f.n);
       await sleep(250);
       if (pageRef) await keep(`card${f.n}`, pageRef.locator(".fb-card", { hasText: f.note.slice(0, 20) }).first());
     }
@@ -229,6 +237,7 @@ await sleep(500);
 await page.keyboard.press("Escape");
 await sleep(400);
 
+await afterResolved(1);
 // 2 — Select it (drag across the false start in the transcript)
 const fsw = falseStart();
 const w11 = (await page.locator(`[data-i="${fsw.from}"]`).first().boundingBox())!;
@@ -250,6 +259,7 @@ mark("note2-send");
 await page.keyboard.press("Meta+Enter");
 await sleep(1200);
 
+await afterResolved(2);
 // 3 — Ask (⌘K): free text becomes a note for Claude
 const f0 = await rect(".frame");
 await glide(f0.x + f0.width * 0.5, 40, 700);

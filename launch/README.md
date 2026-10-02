@@ -1,6 +1,6 @@
 # Launch film
 
-Scripts that make the ~32-second cutroom launch video from the real editor. A scripted user boxes a cut-off speaker, selects a filler word and asks for captions with ⌘K, while a real MCP client (standing in for Claude) picks up each note and makes the edit. No voiceover: picture, type, a piano score and quiet sound design. [BLUEPRINT.md](BLUEPRINT.md) has the editing rules, measured with [dissect](https://github.com/0xpratzyy/dissect).
+Scripts that make the ~43-second cutroom launch video from the real editor. A scripted user boxes a cut-off speaker, selects a filler word and asks for captions with ⌘K, while a real MCP client (standing in for Claude) picks up each note and makes the edit. No voiceover: picture, type, a piano score and quiet sound design. [BLUEPRINT.md](BLUEPRINT.md) has the editing rules, measured with [dissect](https://github.com/0xpratzyy/dissect).
 
 ```bash
 bash launch/build.sh                      # footage generated with the Grok CLI

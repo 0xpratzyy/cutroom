@@ -238,6 +238,82 @@ export function sceneReveal(t: number) {
   }
 }
 
+// ---------------------------------------------------------------- 4. what it is
+export function sceneWhat(t: number, from: number, to: number) {
+  stage(1.2);
+  const lt = t - from;
+  const leave = to - from - 0.45;
+  line("", W / 2, H / 2 - 120, 84, lt, 0.1, { leave, runs: [{ text: "cutroom is a video editor ", color: "gradient" }, { text: "built for Claude.", color: "#f4f2ef" }] });
+  line("", W / 2, H / 2 - 30, 40, lt, 0.6, { weight: 500, leave, runs: [{ text: "You point at what's wrong. Claude makes the edit, over MCP.", color: "#8d8983" }] });
+  // cutroom ⟷ MCP ⟷ Claude
+  const u = expo(prog(lt, 1.0, 0.9));
+  const out = inOut(prog(lt, leave, 0.45));
+  if (u <= 0 || out >= 1) return;
+  x.save();
+  x.globalAlpha = u * (1 - out);
+  const cy = H / 2 + 130;
+  const lx = W / 2 - 330, rx = W / 2 + 330;
+  // left node: the app
+  x.drawImage(icon, lx - 44, cy - 44, 88, 88);
+  font(30, 600);
+  track(-0.5);
+  x.fillStyle = "#d9d5cf";
+  let w = x.measureText("cutroom").width;
+  x.fillText("cutroom", lx - w / 2, cy + 86);
+  // right node: Claude
+  rrect(rx - 44, cy - 44, 88, 88, 24);
+  x.fillStyle = "rgba(255,255,255,0.06)";
+  x.fill();
+  x.strokeStyle = "rgba(255,255,255,0.16)";
+  x.lineWidth = 1.5;
+  x.stroke();
+  font(40, 600);
+  x.fillStyle = "#f4f2ef";
+  w = x.measureText("C").width;
+  x.fillText("C", rx - w / 2, cy + 14);
+  font(30, 600);
+  x.fillStyle = "#d9d5cf";
+  w = x.measureText("Claude").width;
+  x.fillText("Claude", rx - w / 2, cy + 86);
+  track(0);
+  // the link, drawn left to right, with notes travelling one way and edits the other
+  const a = lx + 70, b = rx - 70;
+  const draw = expo(prog(lt, 1.2, 0.8));
+  x.strokeStyle = "rgba(255,255,255,0.22)";
+  x.lineWidth = 2;
+  x.setLineDash([6, 8]);
+  x.beginPath();
+  x.moveTo(a, cy);
+  x.lineTo(lerp(a, b, draw), cy);
+  x.stroke();
+  x.setLineDash([]);
+  if (draw >= 1) {
+    for (const k of [0, 1]) {
+      const p = ((lt * 0.7 + k * 0.5) % 1);
+      const px = k ? lerp(b, a, p) : lerp(a, b, p);
+      x.fillStyle = k ? "#f4f2ef" : CORAL;
+      x.globalAlpha = u * (1 - out) * Math.sin(Math.PI * p);
+      x.beginPath();
+      x.arc(px, cy, 6, 0, Math.PI * 2);
+      x.fill();
+    }
+    x.globalAlpha = u * (1 - out);
+  }
+  font(24, 500, MONO);
+  track(3);
+  x.fillStyle = "#6f6b65";
+  w = x.measureText("MCP").width;
+  x.fillText("MCP", W / 2 - w / 2, cy - 22);
+  font(22, 500, MONO);
+  track(0.5);
+  x.fillStyle = "#57534e";
+  const notes = "notes →", edits = "← edits";
+  x.fillText(notes, W / 2 - x.measureText(notes).width / 2, cy + 40);
+  x.fillText(edits, W / 2 - x.measureText(edits).width / 2, cy + 70);
+  track(0);
+  x.restore();
+}
+
 // ---------------------------------------------------------------- punchline + end
 export function scenePunch(t: number, from: number, to: number) {
   stage();
@@ -270,18 +346,19 @@ export function sceneEnd(t: number, from: number) {
   if (pu > 0) {
     x.save();
     x.globalAlpha = pu;
-    font(34, 500, MONO);
-    const cmd = "npx cutroom";
+    font(30, 500, MONO);
+    const cmd = "claude mcp add cutroom -- npx -y cutroom mcp";
     const cw = x.measureText(cmd).width + 64;
     const py = H / 2 + 230 + (1 - pu) * 14;
     rrect(W / 2 - cw / 2, py, cw, 68, 34);
+    void 0;
     x.fillStyle = "rgba(255,255,255,0.06)";
     x.fill();
     x.strokeStyle = "rgba(255,255,255,0.14)";
     x.lineWidth = 1.5;
     x.stroke();
     x.fillStyle = "#e9e6e1";
-    x.fillText(cmd, W / 2 - cw / 2 + 32, py + 45);
+    x.fillText(cmd, W / 2 - cw / 2 + 32, py + 44);
     x.restore();
   }
   line("", W / 2, H - 80, 28, lt, 1.6, { weight: 500, runs: [{ text: "Open source  ·  Runs on your machine  ·  github.com/0xpratzyy/cutroom", color: "#5f5b56" }] });
