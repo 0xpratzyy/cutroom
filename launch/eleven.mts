@@ -57,6 +57,11 @@ const SFX: Record<string, [string, number]> = {
   chime: ["short bright success chime, modern app notification, two notes rising", 1.0],
   riser: ["tension riser building up, white noise sweep and rising synth, ends abruptly", 2.0],
   mic: ["soft UI tick for a microphone starting to record, subtle", 0.4],
+  pop: ["balloon pop, crisp and loud, cartoon, dry", 0.6],
+  boing: ["cartoon spring boing, bouncy, playful, short", 0.7],
+  plink: ["single bright plink, glockenspiel note, short, dry", 0.4],
+  tick: ["tiny soft tick, letter landing, very short, dry", 0.2],
+  squeak: ["rubber stretching squeak rising in pitch, cartoon tension", 1.2],
 };
 for (const [name, [text, dur]] of Object.entries(SFX)) {
   await post("/v1/sound-generation", { text, duration_seconds: dur, prompt_influence: 0.6 }, join(OUT, "sfx", `${name}.mp3`));

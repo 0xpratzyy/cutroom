@@ -30,3 +30,21 @@ What v1 measured badly:
 5. End on a full-bleed lime card: `npx cutroom` plus the repo URL.
 6. Mix to about −12 LUFS with true peak ≤ −1 dBFS; dialogue ≥ 12 dB over the bed; a sound on every cut, a click on every click, a pop when a note is sent, a chime when Claude resolves one.
 7. Real voices (ElevenLabs) for the presenter and the voice note; ElevenLabs sound effects for whooshes, impacts, clicks and typing.
+
+## v3: story and fun (from the reference the user picked)
+
+Reference: a 15 s motion-design launch film on X (1.76 M views in 4 days). Measured: 27.9 cuts/min, median shot 0.76 s, no voice, −14 LUFS. It's fun because of three things:
+- **A physical joke as the hook.** A cursor switches off "Reduce Motion", and the letters swing and fall apart.
+- **One hero object with real physics.** The orange dot of the "i" bounces with squash and stretch, morphs into shapes and carries the whole film.
+- **A deadpan punchline.** "Motion designer. **0** keyframes."
+
+Our version keeps that structure but tells our story:
+1. **The gag (0–3.5 s):** "you, editing a video with a chatbot:" A prompt box fills with "move me a bit to the left.. no, MY left.. cut at 0:05.. no, the OTHER 0:05..", strains, inflates and bursts. The letters fall out of frame.
+2. **The hero (3.5–6 s):** our coral pin drops in and lands as the full stop of "Stop describing", then hops onto the i of "Just point." Zoom into the pin.
+3. **The power (6–9 s):** point at the frame, or the words, or just say it, cut on the beat in coral, ink and cream. Then "Claude fixes it."
+4. **The proof (9–25.5 s):** the real editor. Beat cards ("Box it", "On it", "Select it", "Say it", "All fixed") with the pin as their full stop.
+5. **The payoff:** before/after, then a 3D type ring (BOX IT · SELECT IT · SAY IT · CLAUDE FIXES IT) circling the pin.
+6. **Punchline:** "Video editor. **0** timelines." in near silence.
+7. **End:** the pin drops onto the cutroom wordmark, then `npx cutroom`.
+
+Palette: cream #efebe3, ink #141210, coral #ff5a3c, with violet and lime as accents. 60 fps.

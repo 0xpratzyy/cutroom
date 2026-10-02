@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const SR = 48000;
-const DUR = 35.5;
+const DUR = 38.5;
 const N = Math.ceil(DUR * SR);
 const L = new Float32Array(N), R = new Float32Array(N);
 const verbIn = new Float32Array(N); // mono reverb send
@@ -112,6 +112,27 @@ function blip(t: number, midi: number, gain = 1) {
   }
 }
 
+/** Cartoon spring: a sine that sags in pitch while it wobbles. */
+function boing(t: number, gain = 1) {
+  let ph = 0;
+  for (let n = 0; n < S(0.45); n++) {
+    const x = n / SR;
+    const f = 140 + 260 * Math.exp(-x * 6) + Math.sin(x * 2 * Math.PI * 16) * 60 * Math.exp(-x * 5);
+    ph += (2 * Math.PI * f) / SR;
+    add(S(t) + n, Math.sin(ph) * Math.exp(-x * 7) * 0.38 * gain, 0, 0.1);
+  }
+}
+/** Rubbery stretch: a rising, wobbling tone. */
+function squeak(t: number, dur: number, gain = 1) {
+  let ph = 0;
+  for (let n = 0; n < S(dur); n++) {
+    const u = n / S(dur), x = n / SR;
+    const f = 260 + 700 * u * u + Math.sin(x * 2 * Math.PI * 9) * 30;
+    ph += (2 * Math.PI * f) / SR;
+    add(S(t) + n, (Math.sin(ph) * 0.6 + saw((ph / (2 * Math.PI)) % 1) * 0.15) * Math.min(1, u * 6) * 0.13 * gain, 0.1, 0.1);
+  }
+}
+
 // ---------------------------------------------------------------- tonal
 const CHORDS = [
   [57, 60, 64], // Am
@@ -175,34 +196,28 @@ function bass(t: number, midi: number, len: number, gain = 1) {
   }
 }
 
-// ---------------------------------------------------------------- arrangement
-// Intro: three word hits.
-pad(0, 2.0, 0.7, 700);
-for (const t of [0, 0.5, 1.0]) {
-  kick(t, 0.9);
-  clap(t, 0.8, 0.5);
+// ---------------------------------------------------------------- arrangement (follows the story)
+// 0–2.5 the prompt box fills up: a staccato bass line climbs a semitone every beat.
+for (let b = 0; b < 5; b++) {
+  const t = b * 0.5;
+  for (const o of [0, 0.25]) bass(t + o, 45 + b, 0.12, 0.9);
+  if (b >= 2) kick(t, 0.55);
+  for (let s16 = 0; s16 < 4; s16++) hat(t + s16 * 0.125, b >= 3 ? 0.7 : 0.4, false, 0.2);
+  pluck(t + 0.25, 69 + b, 0.45, 0.4, 0.3);
 }
-// 2–4: the "describing edits" chat pile-up.
-for (let k = 0; k < 8; k++) {
-  const t = 2 + k * 0.25;
-  blip(t, 76 + k * 2, 0.9);
-  hat(t + 0.125, 0.6);
-  if (k % 2 === 0) kick(t, 0.6);
+// 2.5–3.5 it bursts: silence (the pop and the falling letters are effects).
+// 3.5–6 the pin arrives: a light bouncy groove, opening up into the drop.
+pad(3.5, 6.0, 0.7, 900);
+for (let t = 4.0; t < 6.0 - 1e-6; t += BEAT) {
+  kick(t, 0.75);
+  if (Math.abs(((t % 1) + 1) % 1 - 0.5) < 1e-6) clap(t, 0.7);
+  hat(t + 0.25, 0.6, true, -0.15);
 }
-riser(2.0, 3.75, 1.0);
-// 4: "Just point."
-impact(4.0, 1);
-clap(4.0, 1, 0.9);
-pad(4.0, 6.0, 0.8, 900);
 for (let i = 0; i < 16; i++) {
   const t = 4 + i * 0.125;
-  const ch = chordAt(t);
-  pluck(t, ch[i % 3] + 12, 0.7, 0.2 + (i / 16) * 0.8, i % 2 ? 0.3 : -0.3);
+  pluck(t, chordAt(t)[i % 3] + 12, 0.6, 0.15 + (i / 16) * 0.85, i % 2 ? 0.3 : -0.3);
 }
-riser(5.0, 6.0, 0.9);
-for (const t of [5.0, 5.5, 5.75, 5.875]) kick(t, 0.7);
-
-// 6–28: the groove.
+for (const t of [5.75, 5.875]) kick(t, 0.7);
 function groove(t0: number, t1: number, opts: { arp?: boolean; light?: boolean } = {}) {
   for (let t = t0; t < t1 - 1e-6; t += BEAT) {
     const inBar = ((t % 2) + 2) % 2;
@@ -222,23 +237,19 @@ function groove(t0: number, t1: number, opts: { arp?: boolean; light?: boolean }
       }
   }
 }
-impact(6.0, 0.8);
-groove(6.0, 28.0);
-pad(6.0, 29.75, 1);
-// 28–30: feature words, a clap on every word, then a stop.
-for (let t = 28; t < 29.75; t += 0.25) {
-  kick(t, t % 0.5 === 0 ? 0.9 : 0.5);
-  clap(t, 0.6 + (t - 28) * 0.2, 0.4);
-  bass(t, chordAt(t)[0] - 24, 0.2, 0.9);
-}
-riser(28.0, 29.75, 1.1);
-// 30: end card.
-impact(30.0, 1.1);
-pad(30.0, 35.5, 1.1, 1000);
-for (let i = 0; i < 20; i++) {
-  const t = 30 + i * 0.25;
-  const ch = chordAt(t);
-  pluck(t, ch[[0, 2, 1, 2][i % 4]] + 12, 0.55 * Math.max(0, 1 - i / 22), 0.5, i % 2 ? 0.4 : -0.4);
+// 6–31.25 the montage, the product, the before/after and the type ring.
+groove(6.0, 31.0);
+pad(6.0, 31.25, 1);
+for (const t of [31.0, 31.125]) kick(t, 0.8);
+// 31.5–35 the punchline lands in near silence: one sub hit on "0 timelines".
+pad(31.5, 35.0, 0.45, 600);
+kick(32.75, 1.1, true);
+// 35–38.5 the end card.
+impact(35.0, 0.8);
+pad(35.0, 38.5, 1.1, 1000);
+for (let i = 0; i < 12; i++) {
+  const t = 35.25 + i * 0.25;
+  pluck(t, chordAt(t)[[0, 2, 1, 2][i % 4]] + 12, 0.55 * Math.max(0, 1 - i / 14), 0.5, i % 2 ? 0.4 : -0.4);
 }
 
 // ---------------------------------------------------------------- reverb
@@ -313,6 +324,11 @@ for (const e of effects) {
   else if (e.name === "send") blip(e.at, 84, g);
   else if (e.name === "chime") (blip(e.at, 88, g), blip(e.at + 0.09, 95, g));
   else if (e.name === "mic") blip(e.at, 79, 0.6 * g);
+  else if (e.name === "pop") (impact(e.at, 0.35 * g), blip(e.at, 72, 1.6 * g), clap(e.at, 1.2 * g, 0.3));
+  else if (e.name === "boing") boing(e.at, g);
+  else if (e.name === "plink") blip(e.at, 96, 1.1 * g);
+  else if (e.name === "tick") blip(e.at, 100 + Math.round(Math.abs(rnd()) * 7), 0.5 * g);
+  else if (e.name === "squeak") squeak(e.at, e.dur ?? 0.8, g);
   else if (e.name === "typing") for (let t = e.at; t < e.at + (e.dur ?? 1); t += 0.06 + Math.abs(rnd()) * 0.05) hat(t, 0.9 * g, false, rnd() * 0.3);
 }
 reverb();
@@ -329,7 +345,7 @@ for (let n = 0; n < N; n++) {
 }
 
 // ---------------------------------------------------------------- master
-const fadeOut = (t: number) => (t < 34.3 ? 1 : Math.max(0, 1 - (t - 34.3) / 1.2));
+const fadeOut = (t: number) => (t < 37.3 ? 1 : Math.max(0, 1 - (t - 37.3) / 1.2));
 let peak = 0;
 for (let n = 0; n < N; n++) {
   const f = fadeOut(n / SR);
