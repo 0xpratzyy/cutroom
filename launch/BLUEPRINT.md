@@ -48,3 +48,20 @@ Our version keeps that structure but tells our story:
 7. **End:** the pin drops onto the cutroom wordmark, then `npx cutroom`.
 
 Palette: cream #efebe3, ink #141210, coral #ff5a3c, with violet and lime as accents. 60 fps.
+
+## v4: premium, no voice
+
+v3 read as cheap. These were the reasons:
+- The illustrated presenter.
+- Bouncing letters.
+- Loud full-bleed colour cards.
+- Cartoon sound effects.
+
+v4 keeps the story and drops the gimmicks:
+- **Real footage.** A photoreal talking head made with the Grok CLI, sitting off-centre so the vertical crop cuts him off. The take has a real "Umm" to cut.
+- **Three lines of type that carry the story.** "Editing video with AI / means describing every edit." Then a prompt field types "move the speaker a bit to the left… no, the other left…", gets selected and deleted. Then "What if you could just point?", where the cursor boxes the word "point".
+- **The real editor, floating on near-black.** Slow camera moves, 0.28 s crossfades and quiet captions: "01 Point at the frame", "Claude reframes the shot", "02 Or select the words", "Claude cuts it", "03 Or just ask", "Claude does the edit".
+- **Before / after** of the real export in phone frames.
+- **Then** "Video editor. 0 timelines." and the end card with the app icon and `npx cutroom`.
+- **Type:** blur-in reveals with expo easing; nothing bounces.
+- **Sound:** no voice anywhere. A 100 BPM felt-piano score with a sub pulse, mastered to −14 LUFS.

@@ -1,0 +1,7 @@
+Generate assets for a product demo. Save every output file into the current directory (speaker.png, speaker.mp4) and print their absolute paths at the end.
+
+1. Use image_gen to make ONE photorealistic 16:9 landscape still (as high resolution as possible): a friendly man in his late 20s, short dark curly hair, simple charcoal crewneck sweater, sitting at a desk talking to camera, a podcast microphone on a boom arm near him. He sits on the LEFT third of the frame (his face centred around 30% of the width), lots of space on the right. Warm, tasteful home studio: soft key light, out-of-focus shelves and a plant in the background, shallow depth of field, shot on a cinema camera, natural skin texture, no text, no logos. Save it as speaker.png.
+
+2. Use image_to_video on speaker.png to make the longest video you can (10 seconds or more if possible), landscape 16:9, camera locked off (no camera movement), with natural synced speech audio. He talks to camera casually and says exactly: "Hey, I'm Reed. Umm, today I want to show you something cool. So the idea is... so the idea is really simple. You point at what's wrong, and the AI just fixes it." Natural small head movements and gestures, no music, no subtitles. Save it as speaker.mp4.
+
+If a step fails, retry once with a simpler prompt, then report the exact error.

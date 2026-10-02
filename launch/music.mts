@@ -6,11 +6,14 @@ import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const SR = 48000;
-const DUR = 38.5;
+const CUES = existsSync("launch/out/cues.json") ? JSON.parse(readFileSync("launch/out/cues.json", "utf8")) : {};
+const DUR = (CUES.duration ?? 31.5) + 0.5;
+const SEC = { open: 0, prompt: 2.8, reveal: 5.6, product: 8.4, ba: 21.4, punch: 25.2, end: 27.8, ...(CUES.sections ?? {}) };
 const N = Math.ceil(DUR * SR);
 const L = new Float32Array(N), R = new Float32Array(N);
 const verbIn = new Float32Array(N); // mono reverb send
-const BEAT = 0.5;
+const BEAT = 0.6; // 100 BPM
+const BAR = BEAT * 4;
 
 let seed = 1234567;
 const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
@@ -133,6 +136,35 @@ function squeak(t: number, dur: number, gain = 1) {
   }
 }
 
+/** Soft felt piano: a few decaying partials, a dull hammer and a gentle low-pass. */
+function piano(t: number, midi: number, vel = 0.7, len = 3) {
+  const f = hz(midi);
+  const parts = [1, 2, 3, 4, 5];
+  const amps = [1, 0.42, 0.2, 0.09, 0.05];
+  let lp = 0;
+  for (let n = 0; n < S(len); n++) {
+    const x = n / SR;
+    let v = 0;
+    parts.forEach((h, k) => (v += Math.sin(2 * Math.PI * f * h * (1 + 0.0004 * k) * x) * amps[k] * Math.exp(-x * (1.1 + h * 0.9))));
+    v *= Math.min(1, x / 0.004);
+    v += rnd() * Math.exp(-x * 300) * 0.05;
+    lp += (0.08 + 0.25 * vel) * (v - lp);
+    const fade = Math.min(1, (len - x) / 0.3);
+    add(S(t) + n, lp * 0.16 * vel * fade, 0, 0.45);
+  }
+}
+/** A dry rim/snap, quiet. */
+function rim(t: number, gain = 1) {
+  let lp = 0, ph = 0;
+  for (let n = 0; n < S(0.08); n++) {
+    const x = n / SR;
+    const w = rnd();
+    lp += 0.4 * (w - lp);
+    ph += (2 * Math.PI * 1750) / SR;
+    add(S(t) + n, ((w - lp) * 0.5 + Math.sin(ph) * 0.3) * Math.exp(-x * 70) * 0.35 * gain, -0.1, 0.25);
+  }
+}
+
 // ---------------------------------------------------------------- tonal
 const CHORDS = [
   [57, 60, 64], // Am
@@ -140,7 +172,7 @@ const CHORDS = [
   [48, 52, 55], // C
   [55, 59, 62], // G
 ];
-const chordAt = (t: number) => CHORDS[Math.floor(t / 2) % 4];
+const chordAt = (t: number) => CHORDS[Math.floor(t / BAR) % 4];
 
 function saw(ph: number) {
   return 2 * (ph - Math.floor(ph + 0.5));
@@ -196,61 +228,48 @@ function bass(t: number, midi: number, len: number, gain = 1) {
   }
 }
 
-// ---------------------------------------------------------------- arrangement (follows the story)
-// 0–2.5 the prompt box fills up: a staccato bass line climbs a semitone every beat.
-for (let b = 0; b < 5; b++) {
-  const t = b * 0.5;
-  for (const o of [0, 0.25]) bass(t + o, 45 + b, 0.12, 0.9);
-  if (b >= 2) kick(t, 0.55);
-  for (let s16 = 0; s16 < 4; s16++) hat(t + s16 * 0.125, b >= 3 ? 0.7 : 0.4, false, 0.2);
-  pluck(t + 0.25, 69 + b, 0.45, 0.4, 0.3);
-}
-// 2.5–3.5 it bursts: silence (the pop and the falling letters are effects).
-// 3.5–6 the pin arrives: a light bouncy groove, opening up into the drop.
-pad(3.5, 6.0, 0.7, 900);
-for (let t = 4.0; t < 6.0 - 1e-6; t += BEAT) {
-  kick(t, 0.75);
-  if (Math.abs(((t % 1) + 1) % 1 - 0.5) < 1e-6) clap(t, 0.7);
-  hat(t + 0.25, 0.6, true, -0.15);
-}
-for (let i = 0; i < 16; i++) {
-  const t = 4 + i * 0.125;
-  pluck(t, chordAt(t)[i % 3] + 12, 0.6, 0.15 + (i / 16) * 0.85, i % 2 ? 0.3 : -0.3);
-}
-for (const t of [5.75, 5.875]) kick(t, 0.7);
-function groove(t0: number, t1: number, opts: { arp?: boolean; light?: boolean } = {}) {
+// ---------------------------------------------------------------- arrangement (follows the film's sections)
+// The problem: a low pad and two piano notes.
+pad(SEC.open, SEC.reveal, 0.8, 520);
+piano(SEC.open + 0.25, 64, 0.5, 3.5);
+piano(SEC.open + 1.45, 69, 0.45, 3.5);
+// Describing it: a slow sub pulse, like a held breath.
+for (let t = SEC.prompt; t < SEC.reveal - 0.3; t += BEAT) kick(t, 0.32);
+piano(SEC.prompt + 0.2, 72, 0.42, 3);
+piano(SEC.prompt + 1.4, 71, 0.4, 3);
+riser(SEC.reveal - 0.9, SEC.reveal, 0.35);
+// The turn: the pad opens, a three-note figure.
+pad(SEC.reveal, SEC.product, 1, 1100);
+[69, 72, 76, 72, 74, 76].forEach((m, k) => piano(SEC.reveal + k * BEAT * 0.75, m, 0.55, 3));
+bass(SEC.reveal, 33, SEC.product - SEC.reveal, 0.6);
+// The product: a restrained pulse under a piano ostinato.
+function pulse(t0: number, t1: number, bright = 0) {
   for (let t = t0; t < t1 - 1e-6; t += BEAT) {
-    const inBar = ((t % 2) + 2) % 2;
-    kick(t, opts.light ? 0.75 : 1);
-    if (Math.abs(inBar - 0.5) < 1e-6 || Math.abs(inBar - 1.5) < 1e-6) clap(t, 0.85);
-    hat(t + 0.25, 0.9, true, -0.15);
-    for (let s = 0; s < 4; s++) hat(t + s * 0.125, s % 2 ? 0.55 : 0.8, false, 0.25);
-    const ch = chordAt(t);
-    bass(t + 0.25, ch[0] - 24, 0.22, 1);
-    bass(t, ch[0] - 24, 0.2, 0.8);
-    if (opts.arp !== false)
-      for (let s = 0; s < 4; s++) {
-        const step = Math.round((t - t0) / 0.125) + s;
-        const pattern = [0, 1, 2, 1, 2, 0, 1, 2];
-        const note = ch[pattern[step % 8]] + 12 + (step % 16 >= 12 ? 12 : 0);
-        pluck(t + s * 0.125, note, opts.light ? 0.6 : 0.85, 0.75, s % 2 ? 0.35 : -0.35);
-      }
+    const beatInBar = Math.round((t - t0) / BEAT) % 4;
+    kick(t, 0.5);
+    if (beatInBar === 1 || beatInBar === 3) rim(t, 0.8);
+    hat(t + BEAT / 2, 0.35, false, 0.2);
+    const ch = chordAt(t - t0);
+    bass(t, ch[0] - 24, BEAT * 0.9, 0.75);
+    const fig = [0, 2, 1, 2];
+    piano(t, ch[fig[beatInBar]] + 12, 0.32 + bright * 0.12, 1.6);
+    if (bright > 0 && beatInBar === 0) piano(t, ch[2] + 24, 0.25 * bright, 2.4);
   }
 }
-// 6–31.25 the montage, the product, the before/after and the type ring.
-groove(6.0, 31.0);
-pad(6.0, 31.25, 1);
-for (const t of [31.0, 31.125]) kick(t, 0.8);
-// 31.5–35 the punchline lands in near silence: one sub hit on "0 timelines".
-pad(31.5, 35.0, 0.45, 600);
-kick(32.75, 1.1, true);
-// 35–38.5 the end card.
-impact(35.0, 0.8);
-pad(35.0, 38.5, 1.1, 1000);
-for (let i = 0; i < 12; i++) {
-  const t = 35.25 + i * 0.25;
-  pluck(t, chordAt(t)[[0, 2, 1, 2][i % 4]] + 12, 0.55 * Math.max(0, 1 - i / 14), 0.5, i % 2 ? 0.4 : -0.4);
-}
+pad(SEC.product, SEC.punch, 1, 1300);
+pulse(SEC.product, SEC.product + 6.6, 0);
+pulse(SEC.product + 6.6, SEC.ba, 0.7);
+// The before/after: the same, lifted.
+pulse(SEC.ba, SEC.punch - 0.2, 1);
+// The punchline: everything drops out; one note, then a low hit on "0".
+pad(SEC.punch, SEC.end, 0.4, 500);
+piano(SEC.punch + 0.15, 72, 0.5, 2.5);
+kick(SEC.punch + 0.95, 0.55, true);
+piano(SEC.punch + 0.95, 45, 0.7, 3);
+// The end card: a spread final chord and a long tail.
+pad(SEC.end, DUR, 1.1, 900);
+[45, 57, 64, 67, 71, 76].forEach((m, k) => piano(SEC.end + k * 0.07, m, 0.5, 4));
+bass(SEC.end, 33, 3.5, 0.6);
 
 // ---------------------------------------------------------------- reverb
 function reverb() {
@@ -281,7 +300,7 @@ function reverb() {
 // ---------------------------------------------------------------- cues: dialogue + sound effects
 type Cue = { file: string; at: number; from?: number; dur?: number; gain?: number };
 type Sfx = { name: string; at: number; gain?: number; dur?: number };
-const cueFile = existsSync("launch/out/cues.json") ? JSON.parse(readFileSync("launch/out/cues.json", "utf8")) : {};
+const cueFile = CUES;
 const dialogue: Cue[] = Array.isArray(cueFile) ? cueFile : (cueFile.dialogue ?? []);
 const effects: Sfx[] = cueFile.sfx ?? [];
 function decode(file: string, from?: number, dur?: number) {
@@ -345,7 +364,7 @@ for (let n = 0; n < N; n++) {
 }
 
 // ---------------------------------------------------------------- master
-const fadeOut = (t: number) => (t < 37.3 ? 1 : Math.max(0, 1 - (t - 37.3) / 1.2));
+const fadeOut = (t: number) => (t < DUR - 1.4 ? 1 : Math.max(0, 1 - (t - (DUR - 1.4)) / 1.2));
 let peak = 0;
 for (let n = 0; n < N; n++) {
   const f = fadeOut(n / SR);
@@ -363,8 +382,8 @@ for (let n = 0; n < N; n++) {
   out.writeInt16LE(Math.round(Math.max(-1, Math.min(1, R[n] * norm)) * 32767), 46 + n * 4);
 }
 writeFileSync("launch/out/soundtrack-raw.wav", out);
-// Master: two-pass loudness normalisation to -12 LUFS, true peak <= -2 dBFS (AAC adds ~1 dB).
-const target = "I=-12:TP=-2:LRA=9";
+// Master: two-pass loudness normalisation to -14 LUFS, true peak <= -2 dBFS (AAC adds ~1 dB).
+const target = "I=-14:TP=-2:LRA=11";
 const pass1 = spawnSync("ffmpeg", ["-hide_banner", "-i", "launch/out/soundtrack-raw.wav", "-af", `loudnorm=${target}:print_format=json`, "-f", "null", "-"], { encoding: "utf8" }).stderr;
 const m = JSON.parse(/\{[^{}]*"input_i"[^{}]*\}/.exec(pass1)![0]);
 execFileSync("ffmpeg", ["-v", "error", "-y", "-i", "launch/out/soundtrack-raw.wav", "-af", `loudnorm=${target}:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true,aresample=192000,alimiter=limit=0.72:level=false:attack=1:release=60,aresample=48000`, "-c:a", "pcm_s16le", "launch/out/soundtrack.wav"]);

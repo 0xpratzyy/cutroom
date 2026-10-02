@@ -1,23 +1,38 @@
 #!/usr/bin/env bash
-# Builds the launch film end to end. Uses ElevenLabs voices and effects when a key is set
-# (ELEVENLABS_API_KEY or launch/.env.local), macOS `say` and synthesized effects otherwise.
+# Builds the launch film end to end:
+#   footage (FOOTAGE=<file>, or generated with the Grok CLI from launch/footage-brief.txt)
+#   -> a cutroom project -> the editor captured while Claude edits over MCP -> the real export
+#   -> the composited film + score.
 # Usage: bash launch/build.sh   ->  launch/out/cutroom-launch.mp4
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT="$PWD"
 WORK="${CUTROOM_LAUNCH_WORK:-$(mktemp -d)}"
 export CUTROOM_HOME="$WORK/home"
 mkdir -p launch/out "$CUTROOM_HOME"
-
 npm run build >/dev/null
-if [ -n "${ELEVENLABS_API_KEY:-}" ] || grep -qs ELEVENLABS_API_KEY launch/.env.local; then
-  npx tsx launch/eleven.mts
+
+# 1. Footage: a talking head sitting off-centre, with a filler word to cut.
+if [ -n "${FOOTAGE:-}" ]; then
+  cp "$FOOTAGE" launch/out/footage.mp4
+elif [ ! -f launch/out/footage.mp4 ]; then
+  mkdir -p "$WORK/grok"
+  (cd "$WORK/grok" && grok --permission-mode bypassPermissions --prompt-file "$ROOT/launch/footage-brief.txt")
+  cp "$WORK/grok/speaker.mp4" launch/out/footage.mp4
 fi
-npx tsx launch/speaker.mts
+# Headless Chromium has no H.264, so the editor gets VP9.
+ffmpeg -v error -y -i launch/out/footage.mp4 -c:v libvpx-vp9 -b:v 6M -deadline good -cpu-used 4 -row-mt 1 -c:a libopus -b:a 160k launch/out/footage.webm
+
+# 2. The project, analysed with a model that keeps filler words.
 rm -rf "$WORK/demo"
-node dist/cli.js init "$WORK/demo" launch/out/speaker.webm --name launch-video >/dev/null
+node dist/cli.js init "$WORK/demo" launch/out/footage.webm --name launch-video --model small.en >/dev/null
 node dist/cli.js edit --project "$WORK/demo" '[{"op":"set_settings","aspect":"9:16"}]' >/dev/null
-npx tsx launch/capture.mts "$WORK/demo"
-(cd "$WORK/demo" && node "$OLDPWD/dist/cli.js" export --quality high --out "$OLDPWD/launch/out/after.mp4" >/dev/null)
+
+# 3. The editor, captured while Claude edits over MCP; then the real export.
+FOCUS_X="${FOCUS_X:-0.29}" npx tsx launch/capture.mts "$WORK/demo"
+(cd "$WORK/demo" && node "$ROOT/dist/cli.js" export --quality high --out "$ROOT/launch/out/after.mp4" >/dev/null)
+
+# 4. The film and its score (ElevenLabs effects if launch/eleven.mts has run).
 rm -rf launch/out/before launch/out/after
 npx tsx launch/film.mts --cues
 npx tsx launch/music.mts
