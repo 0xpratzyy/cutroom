@@ -1,0 +1,15 @@
+node_modules
+dist
+.cutroom
+*.log
+test/fixtures/*.wav
+test/fixtures/fw_*
+test/fixtures/*.mp4
+.dev-project
+test-results/
+playwright-report/
+*.tgz
+test/fixtures/*.f32
+test/fixtures/*.aiff
+.DS_Store
+assets/brand/mark-*.svg

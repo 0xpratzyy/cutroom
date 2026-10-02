@@ -1,0 +1,75 @@
+{
+  "name": "cutroom",
+  "version": "0.1.0",
+  "description": "Open-source, local-first video editor built for AI agents. Text-based editing for talking-head videos, driven over MCP, with a full web GUI.",
+  "license": "MIT",
+  "author": "cutroom contributors",
+  "homepage": "https://github.com/0xpratzyy/cutroom#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xpratzyy/cutroom.git"
+  },
+  "bugs": {
+    "url": "https://github.com/0xpratzyy/cutroom/issues"
+  },
+  "type": "module",
+  "bin": {
+    "cutroom": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.map",
+    "scripts/transcribe_faster_whisper.py"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,magenta \"CUTROOM_DEV=1 tsx watch src/cli.ts open ${CUTROOM_PROJECT:-.dev-project} --no-browser --dev\" \"vite --config web/vite.config.ts --open\"",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json && vite build --config web/vite.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json && tsc -p test/e2e/tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "test:e2e": "playwright test",
+    "test:pack": "node scripts/pack-smoke.mjs",
+    "fixtures": "bash scripts/make-fixtures.sh",
+    "cutroom": "tsx src/cli.ts",
+    "doctor": "tsx src/cli.ts doctor",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@napi-rs/canvas": "^1.0.10",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^9.2.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  },
+  "keywords": [
+    "video-editor",
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "ffmpeg",
+    "whisper",
+    "transcript",
+    "captions",
+    "talking-head",
+    "claude"
+  ]
+}
