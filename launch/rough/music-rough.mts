@@ -1,8 +1,11 @@
 // Synthesizes the score for "Rough Cut" (E major, 100 BPM). The score is held back until the edit
 // lets it in: a phone-sketch piano (L0), a left hand and a room (L1), a pad (L2), half a second of
 // digital silence, then the first full chord (the first time the mix is stereo) and the full theme
-// resolving on the tonic. Driven by the compositor's cues (launch/out/rough/cues.json); without them,
-// or with --defaults, it uses the beat sheet's own timings so it can be tested standalone. No voice.
+// resolving on the tonic. Levels (mastered to -14 LUFS integrated, LRA under 10 LU): the sketch sits
+// at about -22 LUFS momentary over a -40 dBFS room tone, the bed builds to about -17 by the silence,
+// and the arrival lands about 7 LU above that. Driven by the compositor's cues (launch/out/rough/
+// cues.json); without them, or with --defaults, it uses the beat sheet's own timings so it can be
+// tested standalone. No voice.
 // Usage: npx tsx launch/rough/music-rough.mts [--defaults | --cues <file>]  ->  launch/out/rough/soundtrack.wav
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -127,17 +130,19 @@ const gated = (t: number) => GATES.some(([a, b]) => t >= a - 1e-6 && t < b);
 const muted = (t: number) => gated(t) || (!!RW && t >= RW.from - 1e-6 && t < RW.to);
 
 // After note k's agent finishes, a transformation that takes a while (the fold) holds the score back
-// until its resolve chime: near-silence, a low octave and a sub swell.
+// until its resolve chime: the pulse stops and the pad holds (dipping a little) under a low octave and a
+// sub swell. Held back, not silent: a hole here would read as a dropout and widen the loudness range.
 const DROPS: [number, number][] = [];
 for (const [, b] of C.working) {
   const c = resolves.find((r) => r.at >= b - 0.05);
   if (c && c.at - b > 0.6 && !KILLS.some((k) => Math.abs(k - b) < 0.3)) DROPS.push([b, c.at]);
 }
 const inDrop = (t: number) => DROPS.some(([a, b]) => t >= a - 1e-6 && t < b + 0.1);
+const DROP_FLOOR = 0.9;
 const dropEnv = (t: number) => {
   for (const [a, b] of DROPS) {
-    if (t >= a && t < b + 0.1) return Math.max(0, 1 - (t - a) / 0.25);
-    if (t >= b + 0.1 && t < b + 0.9) return (t - b - 0.1) / 0.8;
+    if (t >= a && t < b + 0.1) return Math.max(DROP_FLOOR, 1 - (t - a) / 0.25);
+    if (t >= b + 0.1 && t < b + 0.9) return DROP_FLOOR + ((1 - DROP_FLOOR) * (t - b - 0.1)) / 0.8;
   }
   return 1;
 };
@@ -188,8 +193,9 @@ function place(dst: Bus | Float32Array, t: number, v: Float32Array, o: Place = {
 }
 
 // ---------------------------------------------------------------- voices
-/** Soft felt piano (music.mts): a few decaying partials, a dull hammer and a gentle low-pass. */
-function piano(midi: number, vel = 0.7, len = 3) {
+/** Soft felt piano (music.mts): a few decaying partials, a dull hammer and a gentle low-pass.
+ *  sustain > 1 slows the decay (a little pedal), so a bed of single notes holds a level between them. */
+function piano(midi: number, vel = 0.7, len = 3, sustain = 1) {
   const v = new Float32Array(S(len));
   const f = hz(midi);
   const amps = [1, 0.42, 0.2, 0.09, 0.05];
@@ -197,7 +203,7 @@ function piano(midi: number, vel = 0.7, len = 3) {
   for (let n = 0; n < v.length; n++) {
     const x = n / SR;
     let s = 0;
-    amps.forEach((a, k) => (s += Math.sin(2 * Math.PI * f * (k + 1) * (1 + 0.0004 * k) * x) * a * Math.exp(-x * (1.1 + (k + 1) * 0.9))));
+    amps.forEach((a, k) => (s += Math.sin(2 * Math.PI * f * (k + 1) * (1 + 0.0004 * k) * x) * a * Math.exp((-x * (1.1 + (k + 1) * 0.9)) / sustain)));
     s *= Math.min(1, x / 0.004);
     s += rnd() * Math.exp(-x * 300) * 0.05;
     lp += (0.08 + 0.25 * vel) * (s - lp);
@@ -421,11 +427,17 @@ const THEME: [number, number, number][] = [
 const motifAt = (t: number) => (resolves.filter((c) => c.at <= t + 0.01).length >= 2 ? [71, 76, 80] : [71, 76]);
 const FIGURE = { E: [71, 76, 80, 78], A: [71, 76, 81, 80] }; // the coda's one-bar figure
 
+// Pre-arrival levels, relative to the full score (the bed below): sketch and its chime (L0), right and
+// left hand (L1), pad (L2), the crescendo across L2 (dB), and the fold's low octave. PEDAL: the bed's
+// sustain (see piano()).
+const LVL = { sketch: db(-0.8), chime0: db(0.9), rh: db(0), lh: db(-7.5), pad: 0.62, build: 0.6, fold: db(0) };
+const PEDAL = 1.6;
+
 // Resolve chimes complete a rising arpeggio (E5, G#5, B5); the pin dockings are E6/G#6/B6 ticks.
 for (const c of C.chimes) {
   if (muted(c.at)) continue;
   if (c.midi >= 88) place(A, c.at, atPeak(piano(c.midi, 0.5, 1.4), -26), { pan: clamp((c.midi - 92) / 20, -0.3, 0.3), send: 0.25 });
-  else if ((L1 === undefined || c.at < L1) && c.at < STEREO) place(demoF, c.at, piano(c.midi, 0.5, 3.2));
+  else if ((L1 === undefined || c.at < L1) && c.at < STEREO) place(demoF, c.at, piano(c.midi, 0.5, 3.2, PEDAL), { gain: LVL.chime0 });
   else place(F, c.at, piano(c.midi, 0.5, 3.2), { gain: 0.9, pan: c.at >= STEREO ? 0.12 : 0, send: 0.35 });
 }
 
@@ -438,33 +450,63 @@ for (const [a, b] of C.working) {
   for (const t of beats) if (!muted(t)) place(A, t, atPeak(sub(52, 0.12), -24), { until: b });
 }
 
-// L1: the left hand (E2/B2 fifths) in a room, and the motif every other bar. L2: the pad, opening up.
-if (L1 !== undefined) {
-  let since = 2;
-  for (let j = 0, t = L1; t < BED_END; j++, t = L1 + j * BAR) {
-    if (muted(t) || inDrop(t) || nextKill(t) - t < 0.5) continue;
-    place(F, t, piano(40, 0.42, 3.4), { gain: 0.8, pan: -0.15, send: 0.35 });
-    place(F, t + 0.012, piano(47, 0.38, 3.4), { gain: 0.8, pan: -0.1, send: 0.35 });
-    const afterDrop = DROPS.some(([, d]) => t > d && t - d < BAR + 0.15);
-    if (since >= 2 || afterDrop) {
-      motifAt(t).forEach((m, k) => {
-        const tt = t + k * BEAT;
-        if (!inDrop(tt) && nextKill(tt) - tt > 0.3) place(F, tt, piano(m, 0.46, 3), { gain: 0.8, pan: 0.1, send: 0.35 });
-      });
-      since = 0;
+// The bed under the edit, held back in layers: the right hand alone as the phone sketch (L0), the real
+// piano in the room with a left hand under it (L1), then the pad (L2), building to the silence. Every
+// beat sounds, so each layer holds a steady level instead of dipping between notes. The right hand is
+// the motif's first two notes (B4–E5) and a question (F#5, then D#5); once two resolves have landed the
+// motif is complete (G#5) and the figure is the coda's. Levels are relative to the full score (the gain
+// search sets the absolute level): about -22 LUFS momentary for the sketch, -19 for L1, rising to about
+// -17 by the silence, so the arrival lands ~7 LU above what precedes it.
+// [beat, midi, velocity]; the sketch has a soft E4 under its B4 (there is no left hand yet).
+const RH = (bar: number, done: boolean, sketch = false): [number, number, number][] => [
+  ...(sketch ? [[0, 64, 0.26] as [number, number, number]] : []),
+  [0, 71, 0.46], [1, 76, 0.46], done ? [2, 80, 0.44] : [2, 68, 0.46], [3, bar % 2 ? 75 : 78, 0.44],
+];
+const nearChime = (t: number) => resolves.some((c) => c.at > t - 0.15 && c.at < t + 0.3);
+const L0_END = Math.min(L1 ?? BED_END, BED_END);
+{
+  // On a beat grid the agent's heartbeat falls on, from the first beat after 0.1 s.
+  const w0 = C.working.map(([a]) => a).find((a) => a < L0_END);
+  const g0 = w0 !== undefined ? w0 - Math.floor((w0 - 0.1) / BEAT) * BEAT : 0.15;
+  // It leans in a little (2 dB) over its span, into the rewind.
+  const span = Math.max(1, Math.min(L0_END, RW?.from ?? L0_END));
+  for (let k = 0; g0 + k * BEAT < L0_END - 0.1; k++) {
+    for (const [b, m, v] of RH(Math.floor(k / 4), false, true)) {
+      const t = g0 + k * BEAT + (m === 64 ? 0.012 : 0);
+      if (b !== k % 4 || muted(t) || nearChime(t) || nextKill(t) - t < 0.15) continue;
+      place(demoF, t, piano(m, v, 3, PEDAL), { gain: LVL.sketch * db(-1 + 2 * clamp(t / span)) });
     }
-    since++;
   }
 }
-if (L2 !== undefined && L2 < BED_END) {
-  const span = BED_END - L2;
-  pad(F, L2, BED_END, () => CH.E.pad, (t) => 700 + 400 * clamp((t - L2) / span), (t) => Math.min(1, (t - L2) / 1.5) * dropEnv(t), 0.45);
+if (L1 !== undefined && L1 < BED_END) {
+  // L2's crescendo, in dB: flat through L1, then rising to the silence.
+  const lift = (t: number) => (L2 === undefined || t < L2 ? 1 : db(LVL.build * clamp((t - L2) / Math.max(1, BED_END - L2))));
+  // After a drop the bed waits for its resolve chime and comes back on the first beat after it.
+  const resume = DROPS.map(([a, b]) => [a, L1 + Math.ceil((b + 0.2 - L1) / BEAT - 1e-6) * BEAT] as [number, number]);
+  const echoes = (t: number, m: number) => resolves.some((c) => c.midi === m && t >= c.at && t < c.at + 0.7); // don't repeat the chime's note
+  for (let k = 0, t = L1; t < BED_END - 0.1; k++, t = L1 + k * BEAT) {
+    if (muted(t) || inDrop(t) || resume.some(([a, b]) => t >= a && t < b - 1e-6)) continue;
+    const beat = k % 4, g = lift(t);
+    const back = resume.some(([, b]) => Math.abs(t - b) < 1e-6); // the left hand leads the bed back in
+    if ((beat === 0 || back) && nextKill(t) - t > 0.4) {
+      place(F, t, piano(40, 0.42, 3.4, PEDAL), { gain: LVL.lh * g, pan: -0.15, send: 0.35 });
+      place(F, t + 0.012, piano(47, 0.38, 3.4, PEDAL), { gain: LVL.lh * g, pan: -0.1, send: 0.35 });
+    }
+    for (const [b, m, v] of RH(Math.floor(k / 4), motifAt(t).length > 2)) {
+      if (b !== beat || nearChime(t) || echoes(t, m) || nextKill(t) - t < 0.15) continue;
+      place(F, t, piano(m, v, 3, PEDAL), { gain: LVL.rh * g, pan: 0.1, send: 0.35 });
+    }
+  }
+  if (L2 !== undefined && L2 < BED_END) {
+    const span = BED_END - L2;
+    pad(F, L2, BED_END, () => CH.E.pad, (t) => 700 + 500 * clamp((t - L2) / span), (t) => Math.min(1, (t - L2) / 1.5) * dropEnv(t) * lift(t), LVL.pad);
+  }
 }
-// The fold: the pulse stops dead; one low felt octave (E1+E2) over a slow 40 Hz swell, then near-silence.
+// The fold: the pulse stops dead; one low felt octave (E1+E2) over a slow 40 Hz swell, under the held pad.
 for (const [a] of DROPS) {
-  place(F, a, piano(28, 0.6, 3.5), { pan: -0.2, send: 0.3 });
-  place(F, a + 0.01, piano(40, 0.5, 3.5), { pan: -0.15, send: 0.3 });
-  place(F, a, swell(40, 1.2), { gain: 0.09 });
+  place(F, a, piano(28, 0.6, 3.5, 1.8), { gain: LVL.fold, pan: -0.2, send: 0.3 });
+  place(F, a + 0.01, piano(40, 0.5, 3.5, 1.8), { gain: LVL.fold, pan: -0.15, send: 0.3 });
+  place(F, a, swell(40, 1.2), { gain: 0.09 * LVL.fold });
 }
 
 // The arrival: the first full chord, spread across the piano (and the stereo field), pad and sub,
@@ -491,7 +533,7 @@ if (FULL !== undefined && TONIC !== undefined) {
   for (const [k, m, held] of THEME) {
     for (let kk = k; beat(kk) >= FULL - 0.3; kk -= 8) {
       // A pickup that falls just before the cue moves onto it, so the final pass still opens on B4–E5.
-      if (beat(kk) >= FULL - 1e-6 || kk % 1) place(F, Math.max(FULL, beat(kk)), piano(m, 0.6, held * BEAT + 1.6), { gain: 1.1, pan: 0.1, send: 0.3 });
+      if (beat(kk) >= FULL - 1e-6 || kk % 1) place(F, Math.max(FULL, beat(kk)), piano(m, 0.6, held * BEAT + 1.6), { gain: 0.82, pan: 0.1, send: 0.3 });
       if (k >= -8.5) break; // the last phrase plays once; the one before it repeats back to the cue
     }
   }
@@ -499,16 +541,17 @@ if (FULL !== undefined && TONIC !== undefined) {
     const m = slotAt(Math.floor(h / 2)).ost[[0, 2, 1, 3][((h % 4) + 4) % 4]];
     place(F, TONIC + (h * BEAT) / 2, piano(m, 0.28, 1.4), { pan: panOf(m), send: 0.3 });
   }
-  for (let k = k0; k < 0; k++) if (k % 2 === 0 || k === k0) place(F, beat(k), bass(slotAt(k).bass, (k % 2 === 0 ? 2 : 1) * BEAT * 0.98), { gain: 0.45 });
+  for (let k = k0; k < 0; k++) if (k % 2 === 0 || k === k0) place(F, beat(k), bass(slotAt(k).bass, (k % 2 === 0 ? 2 : 1) * BEAT * 0.98), { gain: 0.4 });
   for (let k = k0; beat(k) < REVEAL - 0.05; k++) {
     if (muted(beat(k))) continue;
     place(A, beat(k), atPeak(softKick(), -22));
     if ([1, 3].includes(((k % 4) + 4) % 4)) place(A, beat(k), atPeak(rim(), -30), { pan: -0.1 });
   }
   // The tonic: E major, with the motif's E5 on top.
-  [40, 47, 52, 56, 59, 64, 68, 76].forEach((m, k) => place(F, TONIC + (k && m !== 76 ? k * 0.014 : 0), piano(m, m === 76 ? 0.62 : 0.56, 6.5), { gain: 0.9, pan: panOf(m), send: 0.4 }));
-  place(F, TONIC, bass(40, 3.2), { gain: 0.45 });
-  place(F, TONIC, swell(hz(28), 2.2, 0.12), { gain: 0.03 });
+  // (Held level with the theme around it rather than above it: the arrival was the big moment.)
+  [40, 47, 52, 56, 59, 64, 68, 76].forEach((m, k) => place(F, TONIC + (k && m !== 76 ? k * 0.014 : 0), piano(m, m === 76 ? 0.62 : 0.56, 6.5), { gain: 0.7, pan: panOf(m), send: 0.4 }));
+  place(F, TONIC, bass(40, 3.2), { gain: 0.35 });
+  place(F, TONIC, swell(hz(28), 2.2, 0.12), { gain: 0.02 });
   // The coda: after the pins dock, the figure (and its demo-voice shadow) on the tonic's bar grid.
   const kCoda = 4 * Math.ceil((Math.max(REVEAL + 1.5, (docks[docks.length - 1] ?? 0) + 1) - TONIC) / BAR - 1e-6);
   // Two bars of E add9, then two of A add9, never starting a bar that the end card would cut.
@@ -517,18 +560,22 @@ if (FULL !== undefined && TONIC !== undefined) {
     const m = FIGURE[harmony(k)][k % 4];
     place(demoC, beat(k), piano(m, 0.5, 2.6));
     if (k < kCoda || muted(beat(k))) continue;
-    place(F, beat(k), piano(m, 0.5, 2.6), { gain: 1.3, pan: 0.12, send: 0.4 });
-    if (k % 4 === 0) (harmony(k) === "E" ? [40, 47] : [33, 40]).forEach((l, n) => place(F, beat(k) + n * 0.012, piano(l, 0.45, 3), { gain: 1.2, pan: -0.15, send: 0.35 }));
+    place(F, beat(k), piano(m, 0.5, 2.6), { gain: 1.6, pan: 0.12, send: 0.4 });
+    if (k % 4 === 0) (harmony(k) === "E" ? [40, 47] : [33, 40]).forEach((l, n) => place(F, beat(k) + n * 0.012, piano(l, 0.45, 3), { gain: 1.35, pan: -0.15, send: 0.35 }));
   }
   const CODA = beat(kCoda);
   // The pad: the progression, the tonic, then a sustained E add9 that swells a little under the coda and
-  // dies away under the end card so the three pulses are heard on their own.
-  const tail = Math.max(ENDCARD + 0.5, END_GATE - 0.2);
+  // falls away quickly at the end card (a slow fade from full level would sit in the loudness range's
+  // floor), leaving a faint tail (about -35 LUFS) that is gone by the first pulse, so the three pulses
+  // are heard on their own.
+  const tail = Math.max(ENDCARD + 0.8, Math.min(END_GATE, PULSES[0] ?? END_GATE) - 0.2);
+  const release = Math.min(1.6, tail - ENDCARD);
+  const endEnv = (t: number) => Math.max(Math.pow(1 - clamp((t - ENDCARD) / release), 4), 0.06 * Math.pow(1 - clamp((t - ENDCARD) / (tail - ENDCARD)), 1.5));
   pad(
     F, FULL, END_GATE,
     (t) => (t < TONIC ? slotAt(Math.floor((t - TONIC) / BEAT)).pad : t < REVEAL ? TONIC_PAD : t >= CODA && t < ENDCARD && harmony(Math.floor((t - TONIC) / BEAT)) === "A" ? CH.A.pad : CH.E.pad),
-    (t) => (t < TONIC ? 1250 : t < REVEAL ? 1400 : t < ENDCARD ? 1000 : ramp(t, ENDCARD, tail - ENDCARD, 1000, 500)),
-    (t) => Math.min(1, (t - FULL) / 0.1) * (t < REVEAL ? 1 : t < ENDCARD ? ramp(t, REVEAL, 1.5, 1, 1.4) : 1.4 * Math.pow(1 - clamp((t - ENDCARD) / (tail - ENDCARD)), 2.5)),
+    (t) => (t < TONIC ? 1250 : t < REVEAL ? 1300 : t < ENDCARD ? 1000 : ramp(t, ENDCARD, tail - ENDCARD, 1000, 500)),
+    (t) => Math.min(1, (t - FULL) / 0.1) * (t < REVEAL ? 1 : t < ENDCARD ? ramp(t, REVEAL, 1.5, 1, 2) : 2 * endEnv(t)),
     0.9,
   );
 }
@@ -536,11 +583,11 @@ if (FULL !== undefined && TONIC !== undefined) {
 // The end card: three soft 52 Hz pulses with the waiting dot, then silence.
 for (const p of PULSES) if (!muted(p)) place(A, p, atPeak(sub(52, 0.42, 0.015), -27));
 
-// Room tone under the opening, until the silence: pink noise, low-passed at 6 kHz, -50 dBFS.
+// Room tone under the opening, until the silence: pink noise, low-passed at 6 kHz, -40 dBFS RMS.
 {
   const end = S(SIL?.[0] ?? STEREO);
   const v = lowpass(pink(end), 6000);
-  const g = db(-50) / (rms(v) || 1);
+  const g = db(-40) / (rms(v) || 1);
   for (let n = 0; n < end; n++) room[n] = v[n] * g * (1 + 0.1 * Math.sin((2 * Math.PI * 0.11 * n) / SR)) * Math.min(1, n / S(0.02), (end - n) / S(0.003));
 }
 
@@ -605,7 +652,8 @@ reverb(A);
 // ---------------------------------------------------------------- the rewind
 // The last ~0.7 s of the score before `from`, reversed and sped up 1→2.2× along an expo-in curve (it
 // stays near 1× so the window is the brief's ~0.7 s; the picture's own tl ∝ u^2.2 would read back ~1 s),
-// low-passed (3 → 1.2 kHz as it speeds up); then two frames of silence on the cut.
+// low-passed (3 → 1.2 kHz as it speeds up), and level-matched to the 1.5 s of score before it (+1 dB,
+// since the low-pass takes the top off), so it neither drops out nor jumps; then two frames of silence.
 let rewindSpan = 0;
 if (RW) {
   const i0 = S(RW.from), i1 = S(RW.to - 2 * FRAME), len = i1 - i0;
@@ -625,6 +673,10 @@ if (RW) {
     });
     pos -= 1 + 1.2 * expoIn(u);
   }
+  const before = rms(src[0], Math.max(0, i0 - S(1.5)), i0) + rms(src[1], Math.max(0, i0 - S(1.5)), i0);
+  const after = rms(F.L, i0, i1) + rms(F.R, i0, i1);
+  const match = after > 0 ? Math.min(db(6), (before / after) * db(1)) : 1;
+  for (let i = i0; i < i1; i++) (F.L[i] *= match), (F.R[i] *= match);
   F.L.fill(0, i1, S(RW.to));
   F.R.fill(0, i1, S(RW.to));
   rewindSpan = (i0 - 1 - pos) / SR;
@@ -744,19 +796,30 @@ const ebu = spawnSync("ffmpeg", ["-hide_banner", "-nostats", "-i", WAV, "-af", "
 const summary = ebu.slice(ebu.lastIndexOf("Summary:"));
 const I = /I:\s+(-?[\d.]+) LUFS/.exec(summary)?.[1], LRA = /LRA:\s+(-?[\d.]+) LU/.exec(summary)?.[1], TPK = /Peak:\s+(-?[\d.inf]+) dBFS/.exec(summary)?.[1];
 const M = [...ebu.matchAll(/t:\s*([\d.]+)\s+TARGET:\S+ LUFS\s+M:\s*(-?[\d.]+)/g)].map((x) => [+x[1], +x[2]]);
-const loudest = (a: number, b: number) => Math.max(...M.filter(([t]) => t >= a + 0.4 && t <= b + 1e-6).map(([, v]) => v), -120.7);
-const show = (name: string, a?: number, b?: number) => (a !== undefined && b !== undefined && b > a + 0.4 ? `${name} ${loudest(a, b).toFixed(1)}` : "");
+/** Momentary loudness over [a, b] (400 ms windows that lie inside it): median and max. */
+const momentary = (a: number, b: number) => {
+  const v = M.filter(([t]) => t >= a + 0.4 - 1e-6 && t <= b + 1e-6).map(([, x]) => x).sort((x, y) => x - y);
+  return v.length ? { med: v[v.length >> 1], max: v[v.length - 1] } : undefined;
+};
+const show = (name: string, a?: number, b?: number) => {
+  const r = a !== undefined && b !== undefined && b > a + 0.4 ? momentary(a, b) : undefined;
+  return r ? `${name} ${r.med.toFixed(1)}/${r.max.toFixed(1)}` : "";
+};
+const lead = BED_END !== undefined && L1 !== undefined ? momentary(Math.max(L1, BED_END - 4), BED_END) : undefined;
+const land = ARRIVAL !== undefined ? momentary(ARRIVAL, Math.min(FULL ?? ARRIVAL + 3, ARRIVAL + 3)) : undefined;
 
 console.log(`cues: ${fromFile ? FILE : "built-in defaults (beat sheet)"} · ${DUR}s · layers ${layers.map((l) => `${l.name}@${l.at}`).join(" ")}`);
 console.log(`master: music gain ${(20 * Math.log10(music)).toFixed(2)} dB · pre-limit ceiling ${ceiling.toFixed(2)} dBFS (max GR ${gr.toFixed(2)} dB) · pass 1 ${m.I} LUFS / ${m.TP} dBTP / LRA ${m.LRA} · loudnorm ${norm.normalization_type}, LRA target ${lra}`);
 console.log(`soundtrack.wav: integrated ${I} LUFS · true peak ${TPK} dBFS · LRA ${LRA} LU`);
 console.log(`digital zero: ${GATES.map(([a, b]) => `[${a.toFixed(3)}, ${b.toFixed(3)}) ${nonzero(a, b)} non-zero samples`).join(" · ")} · mono before ${STEREO}s (max |L-R| ${side})`);
 console.log(
-  "loudest momentary (LUFS):",
+  "momentary LUFS (median/max):",
   [
-    show("opening", 0, C.working[0]?.[0]), show("L1", L1, L2), show("L2", L2, BED_END), show("arrival", ARRIVAL, FULL), show("full", FULL, TONIC),
+    show("0-4s", 0, Math.min(4, L0_END)), show("opening", 0, L0_END), show("L1", L1, L2), show("L2", L2, BED_END), show("last 4s", lead && Math.max(L1 ?? 0, BED_END - 4), lead && BED_END),
+    show("arrival", ARRIVAL, FULL), show("full", FULL, TONIC),
     show("tonic", TONIC, REVEAL), show("reveal", REVEAL, DEMO[0]?.[0]), show("before", DEMO[0]?.[0], DEMO[0]?.[1]), show("after", DEMO[0]?.[1], ENDCARD), show("end", ENDCARD, END_GATE),
   ].filter(Boolean).join(" · "),
+  lead && land ? `· arrival step +${(land.med - lead.med).toFixed(1)} LU` : "",
 );
 console.log(`rewind: ${RW ? `${rewindSpan.toFixed(3)}s of score reversed into [${RW.from}, ${RW.to}]` : "none"} · drops ${DROPS.map(([a, b]) => `[${a}, ${b}]`).join(" ") || "none"} · sfx ${C.sfx.length} (${usedEleven.size ? `ElevenLabs: ${[...usedEleven].join(", ")}` : "synthesized"})`);
 

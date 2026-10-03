@@ -217,7 +217,8 @@ async function afterResolved(n: number, settle = 1300) {
 }
 
 // ---------------------------------------------------------------- browser
-const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] });
+// The headless screencast ignores the context's deviceScaleFactor; this flag gives true 2× frames.
+const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required", "--force-device-scale-factor=2"] });
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 // String scripts: tsx adds __name() helpers that do not exist in the page.
 await ctx.addInitScript(`var __name = (f) => f; (${(() => {
@@ -279,7 +280,7 @@ cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: 
   writeFileSync(join(CAP, file), Buffer.from(f.data, "base64"));
   cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
 });
-await cdp.send("Page.startScreencast", { format: "jpeg", quality: 92, maxWidth: 2880, maxHeight: 1800, everyNthFrame: 1 });
+await cdp.send("Page.startScreencast", { format: "jpeg", quality: 95, maxWidth: 2880, maxHeight: 1800, everyNthFrame: 1 });
 
 // Keep frames flowing while idle (the screencast only emits on paint).
 await page.evaluate(`(() => {
@@ -439,6 +440,12 @@ try {
   })()`);
   await sleep(700);
   for (const [i, note] of NOTES.entries()) await keep(`card${i + 1}`, card(note));
+  // Optional anchors for the pull-back: each card's number badge, its last reply, the project title.
+  for (const [i, note] of NOTES.entries()) {
+    await keep(`tick${i + 1}`, card(note).locator(".fb-num"));
+    await keep(`reply${i + 1}`, card(note).locator(".fb-reply").last());
+  }
+  await keep("title", ".doc-tab");
   await keep("review", ".review-bar");
   await keep("before", page.locator(".review-bar button", { hasText: /^Before$/ }));
   await keep("after", page.locator(".review-bar button", { hasText: /^After$/ }));
