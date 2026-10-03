@@ -118,8 +118,10 @@ const TL2 = iCutroom >= 0 ? V2[iCutroom].end + 0.08 : 2.2;
 const iClaude = V3.findIndex((w) => norm(w.text) === "claude");
 const TL3 = iClaude >= 0 ? V3[iClaude].end + 0.04 : TL2 + 2.1;
 const iFixes = V4.findIndex((w) => norm(w.text) === "fixes");
-// The final pass ends on its last line, not on a silent smile.
-const FINAL_LEN = iFixes >= 0 ? Math.min(dur.v4 ?? 7, (V4[iFixes + 1] ?? V4[iFixes]).end + 0.7) : (dur.v4 ?? 6);
+// The final pass opens on the first captioned frame ("hey,"), not on the off-lens pre-roll, which
+// would read as the false start surviving; and it ends on its last line, not on a silent smile.
+const FINAL_IN = V4.length ? Math.ceil(V4[0].start * INNER_FPS - 1e-6) / INNER_FPS : 0;
+const FINAL_LEN = (iFixes >= 0 ? Math.min(dur.v4 ?? 7, (V4[iFixes + 1] ?? V4[iFixes]).end + 0.7) : (dur.v4 ?? 6)) - FINAL_IN;
 // The rewind gets motion-interpolated frames so a fast backwards scrub reads as motion, not as ghosts.
 const RW_FPS = 120;
 const v1Rewind = decode("v1", "1920:1080", RW_FPS, `trim=0:${(TL1 + 0.3).toFixed(2)},minterpolate=fps=${RW_FPS}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,`, `v1-rw-${TL1.toFixed(2)}`);
@@ -157,7 +159,7 @@ const T = (() => {
   mark("snap", 0.45);
   mark("final", FINAL_LEN);
   mark("finalEnd", 0.15);
-  mark("reveal", 5.2);
+  mark("reveal", 4.2);
   const bc = ev["before-click"] ?? 0, ac = ev["after-click"] ?? bc + 2;
   mark("review", Math.max(4.2, ac + 1.4 - (bc - 0.4)));
   mark("end", 6.8);
@@ -275,7 +277,7 @@ function wrapText(text: string, maxW: number) {
  * dot and "YOU" for the note, a lime dot (and "CLAUDE", once the film has named it) for the reply.
  * (ax, ay) is the card's anchor; `side` says which way it grows from there.
  */
-function noteCard(ax: number, ay: number, n: number, t: number, o: { note: string; reply: string; openAt: number; replyAt: number; signed: boolean; working?: [number, number]; side: "left" | "right"; vAlign?: "bottom" | "middle"; maxW: number; alpha?: number; frozen?: [number, number] }) {
+function noteCard(ax: number, ay: number, n: number, t: number, o: { note: string; reply: string; openAt: number; replyAt: number; signed: boolean; working?: [number, number]; side: "left" | "right"; vAlign?: "bottom" | "middle"; maxW: number; noteMaxW?: number; alpha?: number; frozen?: [number, number] }) {
   const a = o.alpha ?? 1;
   const inU = expo(prog(t, o.openAt, 0.45));
   if (a <= 0 || inU <= 0) return null;
@@ -285,7 +287,7 @@ function noteCard(ax: number, ay: number, n: number, t: number, o: { note: strin
     x.save();
     x.font = "600 46px SF";
     spacing(-0.6);
-    const lines = wrapText(reply ? text : `“${text}”`, o.maxW);
+    const lines = wrapText(reply ? text : `“${text}”`, reply ? o.maxW : (o.noteMaxW ?? o.maxW));
     const tw = Math.max(...lines.map((l) => x.measureText(l).width));
     const label = reply ? (o.signed ? "Claude" : "") : "you";
     const top = label ? 40 : 0;
@@ -489,7 +491,7 @@ function entries(beat: number): Entry[] {
   ];
 }
 const beatAt = (t: number) => (t >= T.wait3 - 0.01 ? 2 : t >= T.wait2 - 0.01 ? 1 : 0);
-function drawLogCard(t: number, alpha: number, o: { still?: boolean; rect?: Box } = {}) {
+function drawLogCard(t: number, alpha: number, o: { dim?: number; rect?: Box } = {}) {
   if (alpha <= 0.002) return;
   const r = o.rect ?? LOGCARD;
   const k = r.width / LOGCARD.width;
@@ -536,24 +538,41 @@ function drawLogCard(t: number, alpha: number, o: { still?: boolean; rect?: Box 
   }
   x.fillStyle = "rgba(255,255,255,0.08)";
   x.fillRect(36, 116, LOGCARD.width - 72, 1.5);
-  // the current beat's calls; earlier beats collapse to one dim line each
+  // the current beat's calls; earlier beats collapse to one dim receipt each. The list scrolls so
+  // the newest call's last line always clears the bottom edge; older lines fade under the divider.
   const beat = beatAt(t);
+  const ents = entries(beat);
+  const viewH = r.height / k;
+  const TOP = 120, FADE = 32, PAD = 28;
+  mono(22);
+  const hOf = (e: Entry) => 34 + (e.body ?? []).reduce((sum, b) => sum + wrapText(b, LOGCARD.width - 110).length * 30, 0) + (e.thumb ? 90 : 0) + 14;
+  let bottom = 162 + beat * 36 + (beat ? 10 : 0);
+  for (const e of ents) bottom += hOf(e) * expo(prog(t, e.at, 0.5));
+  const scroll = Math.max(0, bottom - 36 + PAD - viewH);
+  const fadeAt = (inkTop: number) => clamp((inkTop - scroll - TOP) / FADE);
+  x.save();
+  x.beginPath();
+  x.rect(0, TOP, LOGCARD.width, viewH - TOP);
+  x.clip();
+  x.translate(0, -scroll);
   let y = 162;
   for (let b = 0; b < beat; b++) {
     mono(21);
+    x.globalAlpha = alpha * fadeAt(y - 16);
     x.fillStyle = "rgba(232,244,124,0.5)";
     x.fillText(`✓ #${b + 1}  ${story[b].reply}`.slice(0, 44), 36, y);
     y += 36;
   }
   if (beat) y += 10;
-  for (const e of entries(beat)) {
+  for (const e of ents) {
     const u = expo(prog(t, e.at, 0.5));
     if (u <= 0) continue;
     x.save();
-    x.globalAlpha = alpha * u * (o.still ? 0.5 : 1);
+    const a0 = alpha * u * (o.dim ?? 1);
     if (u < 1) x.filter = `blur(${((1 - u) * 8).toFixed(1)}px)`;
     const dy = (1 - u) * 10;
     mono(24, 600);
+    x.globalAlpha = a0 * fadeAt(y + dy - 18);
     x.fillStyle = e.ok ? LIME : CORAL;
     x.fillText(e.ok ? "✓" : "→", 36, y + dy);
     x.fillStyle = e.ok ? LIME : "#fff";
@@ -563,12 +582,14 @@ function drawLogCard(t: number, alpha: number, o: { still?: boolean; rect?: Box 
     x.fillStyle = e.ok ? "rgba(232,244,124,0.85)" : SOFT;
     for (const b of e.body ?? []) {
       for (const l of wrapText(b, LOGCARD.width - 110)) {
+        x.globalAlpha = a0 * fadeAt(y + dy - 16);
         x.fillText(l, 66, y + dy);
         y += 30;
       }
     }
     if (e.thumb) {
       const tw = 150, th = 84;
+      x.globalAlpha = a0 * fadeAt(y - 12 + dy + 30);
       x.save();
       rrect(66, y - 12 + dy, tw, th, 8);
       x.clip();
@@ -583,6 +604,7 @@ function drawLogCard(t: number, alpha: number, o: { still?: boolean; rect?: Box 
     y += 14;
     x.restore();
   }
+  x.restore();
   x.restore();
   x.strokeStyle = "rgba(255,255,255,0.12)";
   x.lineWidth = 1.2;
@@ -624,8 +646,12 @@ const CROP: Box = { x: (crop.x / crop.width) * W, y: 0, width: (1080 / crop.widt
 const COL: Box = { x: 560, y: 72, width: 472.5, height: 840 };
 const COLF: Box = { x: (W - 540) / 2, y: 60, width: 540, height: 960 };
 const COLCX = COL.x + COL.width / 2;
+const PAL_CROP_W = 480, PAL_SCALE = 2.9, PAL_Y = COL.y + 200; // the palette's query row at ~44 px on canvas
 const region2 = story[1].region ?? { x: CROP.x / W, y: 0, w: CROP.width / W, h: 1 };
-const BOX: Box = { x: region2.x * W, y: region2.y * H, width: region2.w * W, height: region2.h * H };
+// The note's region is the full-height crop; the gesture is drawn inset so its corners and the drag read
+// (also on a phone); the fold then opens it out onto cutroom's real full-height crop.
+const BOX_TOP = 120, BOX_BOT = 940;
+const BOX: Box = { x: region2.x * W, y: Math.max(region2.y * H, BOX_TOP), width: region2.w * W, height: Math.min((region2.y + region2.h) * H, BOX_BOT) - Math.max(region2.y * H, BOX_TOP) };
 const lerpBox = (a: Box, b: Box, u: number): Box => ({ x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u), width: lerp(a.width, b.width, u), height: lerp(a.height, b.height, u) });
 
 // Caption word boxes for the lift (where the burned-in words sit in the v4 export).
@@ -684,7 +710,9 @@ async function act1(t: number) {
       x.globalAlpha = u;
       mono(44, 600);
       spacing(1);
-      const a = `${fmtDur(dur.v1)} → ${fmtDur(dur.v2)}`, b = `  −${(dur.v1 - dur.v2).toFixed(1)} s`;
+      const hs = (v: number) => Math.round(v * 100);
+      const f2 = (v: number) => `0:${(hs(v) / 100).toFixed(2).padStart(5, "0")}`;
+      const a = `${f2(dur.v1)} → ${f2(dur.v2)}`, b = `  −${((hs(dur.v1) - hs(dur.v2)) / 100).toFixed(2)} s`;
       x.shadowColor = "rgba(0,0,0,0.55)";
       x.shadowBlur = 16;
       x.fillStyle = "rgba(255,255,255,0.92)";
@@ -708,7 +736,8 @@ async function act1(t: number) {
     x.fillStyle = "#fff";
     x.shadowColor = "rgba(0,0,0,0.6)";
     x.shadowBlur = 24;
-    x.fillText(tc, W / 2 - x.measureText(tc).width / 2, H / 2 + 30);
+    const tw = x.measureText(tc).width;
+    x.fillText(tc, Math.min(LOGCARD.x / 2, LOGCARD.x - 40 - tw / 2) - tw / 2, H / 2 + 30);
     spacing(0);
     x.restore();
   }
@@ -731,7 +760,7 @@ async function act1(t: number) {
       cursor(cx, t < T.noteSend ? y - 12 : lerp(y - 12, y + 18, drift), 1.5, t < T.rewind ? 1 : 1 - prog(t, T.rewind, 0.2));
       // the real composer (2× pixels) while typing
       if (t >= T.noteOpen && t < T.noteSend + 0.25) {
-        const c = lerp((ev["select-up"] ?? 0) + 0.6, (ev["note1-send"] ?? 0) - 0.02, prog(t, T.noteOpen + 0.15, T.noteSend - T.noteOpen - 0.15));
+        const c = lerp((ev["select-up"] ?? 0) + 0.8, (ev["note1-send"] ?? 0) - 0.02, prog(t, T.noteOpen + 0.15, T.noteSend - T.noteOpen - 0.15));
         const r = rects.composer1, scale = 1.6;
         const out = prog(t, T.noteSend, 0.25);
         await capCrop(c, r, clamp(sx0 - 20, 40, W - r.width * scale - 40), y - size - 48 - r.height * scale, scale, 1 - out, expo(prog(t, T.noteOpen, 0.25)));
@@ -740,7 +769,7 @@ async function act1(t: number) {
   } else drawLine(layoutLine(lineV2, size, W / 2), y, size, Math.min(TL2, t - T.pass2));
   // note 1 at feed size, then Claude's reply in its place
   if (t < T.rewind + 0.3) noteCard(anchorX, 930, 1, t, { note: story[0].note, reply: story[0].reply, openAt: T.noteSend, replyAt: T.resolved1, signed: false, working: [T.working1, T.resolved1], side: "right", maxW: 720, alpha: 1 - prog(t, T.rewind, 0.3) });
-  drawLogCard(t, expo(prog(t, T.wait1 - 0.1, 0.5)) * (t >= T.rewind && t < T.pass2 ? 0.55 : 1));
+  drawLogCard(t, expo(prog(t, T.wait1 - 0.1, 0.5)) * (1 - 0.45 * Math.sin(Math.PI * prog(t, T.rewind - 0.1, T.pass2 - T.rewind + 0.2))));
   // naming the agent
   if (t >= T.pass2) {
     line("", LOGCARD.x, 806, 74, t, T.claude, { align: "left", leave: T.copyLeave, runs: [{ text: "That was Claude.", color: "gradient" }] });
@@ -757,11 +786,14 @@ async function act2(t: number) {
   const ease = inOut(prog(t, T.fold + 0.05, 0.45));
   const boxNow = t < T.fold ? BOX : lerpBox(BOX, CROP, ease);
   const since = t - T.freeze2;
+  const du = expo(prog(t, T.boxDown + 0.05, T.boxUp - T.boxDown));
+  const drawn = t < T.boxUp ? { x: BOX.x, y: BOX.y, width: BOX.width * du, height: BOX.height * du } : boxNow;
+  const dim = t >= T.boxDown ? Math.max(dark, 0.45 * expo(prog(t, T.boxDown, 0.3))) : dark;
   if (t < T.glide) {
     await drawLiving(DEC.v2, TL2, since, FULL, 0.2);
-    if (dark > 0) {
-      x.fillStyle = `rgba(6,6,7,${dark})`;
-      const b = boxNow;
+    if (dim > 0) {
+      x.fillStyle = `rgba(6,6,7,${dim})`;
+      const b = t < T.fold ? drawn : boxNow;
       x.fillRect(0, 0, W, b.y);
       x.fillRect(0, b.y + b.height, W, H - b.y - b.height);
       x.fillRect(0, b.y, b.x, b.height);
@@ -782,10 +814,10 @@ async function act2(t: number) {
   }
   const colNow = t < T.glide ? boxNow : lerpBox(CROP, COL, glideU);
   if (t < T.glide) scrimRight(1 - dark);
-  // the box: drawn, breathing while Claude works, then easing onto cutroom's real crop window
+  // the box: drawn, settling on release, breathing while Claude works, then easing onto cutroom's real crop window
   if (t >= T.boxDown && t < T.glide + 0.02) {
-    const du = expo(prog(t, T.boxDown + 0.05, T.boxUp - T.boxDown));
-    const b = t < T.boxUp ? { x: BOX.x, y: BOX.y, width: BOX.width * du, height: BOX.height * du } : boxNow;
+    const sc = 1 + 0.025 * Math.sin(Math.PI * prog(t, T.boxUp, 0.28));
+    const b = { x: drawn.x + (drawn.width * (1 - sc)) / 2, y: drawn.y + (drawn.height * (1 - sc)) / 2, width: drawn.width * sc, height: drawn.height * sc };
     const breathe = t >= T.working2 && t < T.fold ? 0.7 + 0.3 * Math.abs(Math.sin((t - T.working2) * Math.PI * 1.667)) : 1;
     const bright = t >= T.fold && t < T.fold + 2 / FPS;
     x.save();
@@ -793,9 +825,24 @@ async function act2(t: number) {
     x.fillStyle = `rgba(255,95,79,${bright ? 0.1 : 0.06 * (1 - ease)})`;
     x.fillRect(b.x, b.y, b.width, b.height);
     x.strokeStyle = ease > 0 ? `rgba(255,${Math.round(lerp(95, 240, ease))},${Math.round(lerp(79, 230, ease))},${lerp(1, 0.16, ease)})` : CORAL;
-    x.lineWidth = lerp(2.5, 1, ease);
+    x.lineWidth = lerp(5, 1, ease);
+    x.shadowColor = `rgba(0,0,0,${0.35 * (1 - ease)})`;
+    x.shadowBlur = 10;
     rrect(b.x, b.y, b.width, b.height, 6 * (1 - ease));
     x.stroke();
+    x.shadowColor = "transparent";
+    const ha = prog(t, T.boxUp - 0.05, 0.15) * (1 - ease);
+    if (ha > 0) {
+      const hs = 14;
+      x.globalAlpha = breathe * ha;
+      x.fillStyle = "#fff";
+      x.strokeStyle = CORAL;
+      x.lineWidth = 3;
+      for (const [hx, hy] of [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]]) {
+        x.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+        x.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs);
+      }
+    }
     x.restore();
   }
   // HUD: the 16:9 burn-ins fade as the picture leaves, the column's arrive with it
@@ -812,7 +859,7 @@ async function act2(t: number) {
     const out = prog(t, T.note2Send, 0.25);
     await capCrop(c, r, Math.max(40, BOX.x - r.width * scale - 30), BOX.y + 280, scale, 1 - out, expo(prog(t, T.note2Open, 0.25)));
   }
-  noteCard(colNow.x - 32, colNow.y + colNow.height * 0.42, 2, t, { note: story[1].note, reply: story[1].reply, openAt: T.note2Send, replyAt: T.resolved2, signed: true, working: [T.working2, T.resolved2], side: "left", vAlign: "middle", maxW: Math.max(300, Math.min(460, colNow.x - 140)) });
+  noteCard(colNow.x - 32, colNow.y + colNow.height * 0.42, 2, t, { note: story[1].note, reply: story[1].reply, openAt: T.note2Send, replyAt: T.resolved2, signed: true, working: [T.working2, T.resolved2], side: "left", vAlign: "middle", maxW: Math.max(300, Math.min(460, COL.x - 140)), noteMaxW: Math.max(300, Math.min(460, BOX.x - 140)) });
   // cursor: enters, drags the box, lets go and rests at the right
   const curIn = expo(prog(t, T.box, 0.6));
   let cx = lerp(W + 40, BOX.x, curIn), cy = lerp(H * 0.7, BOX.y + 2, curIn);
@@ -887,21 +934,30 @@ async function act3(t: number) {
   x.strokeStyle = "rgba(255,240,230,0.16)";
   x.lineWidth = 1;
   x.strokeRect(COL.x + 0.5, COL.y + 0.5, COL.width - 1, COL.height - 1);
-  const hudA = still ? 0.4 : t >= T.bloom && t < T.resolved3 ? 0.4 + 0.6 * prog(t, T.liftEnd, 0.3) : 1;
+  // the hush: everything around the face eases down just before the stillness (so nothing moves inside it),
+  // holds through the bloom and the lift, and comes back as Claude resolves the note
+  const hush = inOut(prog(t, T.still - 0.12, 0.12)) * (1 - inOut(prog(t, T.liftEnd, T.resolved3 - T.liftEnd)));
+  const hudA = 1 - 0.6 * hush;
   hudColumn(t, { version: t < T.resolved3 ? "v3" : "v4", aspect: "9:16", durS: dur.v3, tl, paused: t >= playEnd }, COL, hudA);
   const liftU = t >= T.liftFrom ? clamp((t - T.liftFrom) / 0.6) : 0;
   drawColumnTranscript(tl, hudA, COLCX, COL, capWords.length ? liftU : 0);
   if (capWords.length && t >= T.liftFrom && t < T.liftEnd) captionLift(t, tl);
   // the notes beside the Short: #2 answered, #3 asked, then answered
-  noteCard(COL.x - 32, COL.y + COL.height * 0.25, 2, t, { note: story[1].note, reply: story[1].reply, openAt: -1, replyAt: -1, signed: true, side: "left", vAlign: "middle", maxW: COL.x - 140, alpha: (1 - expo(prog(t, T.palette - 0.1, 0.3))) * (still ? 0.4 : 1) });
-  noteCard(COL.x - 32, COL.y + COL.height * 0.6, 3, t, { note: story[2].note, reply: story[2].reply, openAt: T.askSend, replyAt: T.resolved3, signed: true, working: [T.working3, T.resolved3], side: "left", vAlign: "middle", maxW: COL.x - 140, alpha: still ? 0.4 : 1, frozen: [T.still, T.bloom] });
-  if (t >= T.cmdK && t < T.cmdK + 0.5) burn("⌘K", 60, H - 70, 34, 0.7 * (1 - prog(t, T.cmdK + 0.25, 0.25)));
-  if (paletteOpen) {
+  noteCard(COL.x - 32, COL.y + COL.height * 0.42, 2, t, { note: story[1].note, reply: story[1].reply, openAt: -1, replyAt: -1, signed: true, side: "left", vAlign: "middle", maxW: Math.max(300, Math.min(460, COL.x - 140)), noteMaxW: Math.max(300, Math.min(460, BOX.x - 140)), alpha: 1 - expo(prog(t, T.palette - 0.1, 0.3)) });
+  noteCard(COL.x - 32, COL.y + COL.height * 0.6, 3, t, { note: story[2].note, reply: story[2].reply, openAt: T.askSend, replyAt: T.resolved3, signed: true, working: [T.working3, T.resolved3], side: "left", vAlign: "middle", maxW: COL.x - 140, alpha: hudA, frozen: [T.still, T.bloom] });
+  const palU = expo(prog(t, T.palette, 0.25)) * (1 - prog(t, T.askSend, 0.25));
+  drawLogCard(t, 1 - 0.65 * palU, { dim: 1 - 0.5 * hush });
+  if (paletteOpen && rects.palette) {
     const c = lerp((ev["palette"] ?? 0) + 0.45, (ev["ask-send"] ?? 0) - 0.02, prog(t, T.palette + 0.1, T.askSend - T.palette - 0.1));
-    const r = rects.palette;
-    const scale = Math.min(1.3, (COL.width + 220) / r.width);
+    const r = { ...rects.palette, width: Math.min(PAL_CROP_W, rects.palette.width) };
     const out = prog(t, T.askSend, 0.25);
-    await capCrop(c, r, COLCX - (r.width * scale) / 2, COL.y + 200, scale * (1 - out * 0.3), (1 - out) * expo(prog(t, T.palette, 0.25)), 1);
+    const sc = PAL_SCALE * (1 - out * 0.3);
+    await capCrop(c, r, COLCX - (r.width * sc) / 2, PAL_Y, sc, (1 - out) * expo(prog(t, T.palette, 0.25)), 1);
+  }
+  if (t >= T.cmdK - 0.06 && t < T.cmdK + 0.5 && rects.palette) {
+    const a = expo(prog(t, T.cmdK - 0.06, 0.08)) * (1 - prog(t, T.cmdK + 0.3, 0.2));
+    const press = prog(t, T.cmdK, 0.04) * (1 - prog(t, T.cmdK + 0.12, 0.08));
+    keycaps(["⌘", "K"], COLCX, PAL_Y + rects.palette.height * PAL_SCALE + 44, 120, a, press);
   }
   // the cursor comes up for ⌘K, then leaves out of the bottom edge for good
   if (t < T.cursorOut + 0.6) {
@@ -909,7 +965,34 @@ async function act3(t: number) {
     const outU = inOut(prog(t, T.cursorOut, 0.5));
     cursor(lerp(1210, COLCX + 140, up), lerp(980, COL.y + 150, up) + outU * 1000, 1.5);
   }
-  drawLogCard(t, 1, { still });
+}
+/** Two physical-looking keycaps, pressed once. */
+function keycaps(keys: string[], cx: number, top: number, size: number, alpha: number, press: number) {
+  if (alpha <= 0.002) return;
+  const gap = size * 0.16, total = keys.length * size + (keys.length - 1) * gap, depth = size * 0.07, r = size * 0.2;
+  x.save();
+  x.globalAlpha = alpha;
+  keys.forEach((k, i) => {
+    const left = cx - total / 2 + i * (size + gap), dy = press * depth * 0.8;
+    x.shadowColor = "rgba(0,0,0,0.55)";
+    x.shadowBlur = 36;
+    x.shadowOffsetY = 12;
+    rrect(left, top + depth, size, size, r);
+    x.fillStyle = "#0c0b0a";
+    x.fill();
+    x.shadowColor = "transparent";
+    rrect(left, top + dy, size, size, r);
+    x.fillStyle = press > 0.5 ? "#262320" : "#1d1b19";
+    x.fill();
+    x.strokeStyle = "rgba(255,240,230,0.20)";
+    x.lineWidth = 1.5;
+    x.stroke();
+    mono(size * 0.46, 500);
+    x.fillStyle = BONE;
+    const w = x.measureText(k).width;
+    x.fillText(k, left + (size - w) / 2, top + dy + size * 0.66);
+  });
+  x.restore();
 }
 /** Grey transcript words fly up into the exact boxes of their burned-in caption words. */
 function captionLift(t: number, tl: number) {
@@ -955,7 +1038,7 @@ async function act4(t: number) {
   const dest = finalDest(t);
   // the playhead goes home behind a short dip (not a second rewind), then the finished Short plays
   const dip = t < T.final ? Math.sin(Math.PI * prog(t, T.snap + 0.05, T.final - T.snap - 0.05)) : 0;
-  const tl = t < T.final ? (t < (T.snap + T.final) / 2 ? TL3 : 0) : Math.min(FINAL_LEN, t - T.final);
+  const tl = t < T.final ? (t < (T.snap + T.final) / 2 ? TL3 : FINAL_IN) : FINAL_IN + Math.min(FINAL_LEN, t - T.final);
   x.save();
   rrect(dest.x, dest.y, dest.width, dest.height, 4);
   x.clip();
@@ -1018,14 +1101,14 @@ const endDest = finalDest(T.reveal);
 const zStart = endDest.height / (F916.height * BASE);
 const camStart: Cam = { x: F916.x + F916.width / 2 - (endDest.x + endDest.width / 2 - W / 2) / (BASE * zStart), y: F916.y + F916.height / 2 - (endDest.y + endDest.height / 2 - H / 2) / (BASE * zStart), z: zStart };
 const camWide: Cam = { ...fitCam({ x: 0, y: 0, width: 1440, height: 900 }, 0.72), y: 450 + 52 };
-// Review: the editor edge to edge, cut in the gutter under the toolbar, near native sharpness.
-const REV_X0 = 5, REV_X1 = 1435, REV_TOP = 116.5;
-const kReview = W / (REV_X1 - REV_X0);
-const camReview: Cam = { x: (REV_X0 + REV_X1) / 2, y: REV_TOP + H / 2 / kReview, z: kReview / BASE };
-const cardsKnown = [rects.card1, rects.card2, rects.card3].filter(Boolean) as Box[];
-const PANEL: Box = cardsKnown.length
-  ? { x: Math.min(...cardsKnown.map((r) => r.x)) - 6, y: Math.min(...cardsKnown.map((r) => r.y)) - 6, width: cardsKnown[0].width + 12, height: Math.max(...cardsKnown.map((r) => r.y + r.height)) - Math.min(...cardsKnown.map((r) => r.y)) + 12 }
-  : { x: 1104, y: 112, width: 336, height: 560 };
+// Review: push in on what changed: the struck words, the preview and Claude's review pill (2× capture stays sharp).
+const RB = rects.review ?? F916, RX0 = (rects.words?.x ?? 69) - 24, RX1 = RB.x + RB.width + 24;
+const kReview = Math.min((W * 0.96) / (RX1 - RX0), 2.1);
+const camReview: Cam = { x: (RX0 + RX1) / 2, y: 335, z: kReview / BASE };
+// Reveal choreography (seconds after T.reveal): the pins leave once the real notes panel is in frame.
+const PIN_GO = 1.3, PIN_FLY = 0.8, PIN_STAG = 0.12;
+// the ⌘K search field in the editor's top bar (capture coordinates), where note 3 was asked
+const SEARCH_K: Box = { x: 860, y: 12, width: 40, height: 20 };
 // The capture's After lands a few frames after the click; until then the preview shows its raw state.
 const afterShown = await (async () => {
   const ac = ev["after-click"], r = F916;
@@ -1047,7 +1130,7 @@ const afterShown = await (async () => {
 async function act5(t: number) {
   stage(1.2);
   if (t < T.review) {
-    const u = inOut(prog(t, T.reveal, 2.4));
+    const u = inOut(prog(t, T.reveal, 2.0));
     const cam: Cam = { x: lerp(camStart.x, camWide.x, u), y: lerp(camStart.y, camWide.y, u), z: Math.exp(lerp(Math.log(camStart.z), Math.log(camWide.z), u)) };
     const c = (ev["reveal"] ?? 0) + (t - T.reveal);
     await drawEditor(c, cam, inOut(prog(t, T.reveal, 0.6)));
@@ -1059,7 +1142,7 @@ async function act5(t: number) {
       x.globalAlpha = sharp;
       rrect(pr.x, pr.y, pr.width, pr.height, 4);
       x.clip();
-      x.drawImage(await img(inner.v4(FINAL_LEN - 0.02)), pr.x, pr.y, pr.width, pr.height);
+      x.drawImage(await img(inner.v4(FINAL_IN + FINAL_LEN - 0.02)), pr.x, pr.y, pr.width, pr.height);
       x.restore();
       if (rects.review) {
         const f = await img(capFile(c));
@@ -1070,25 +1153,47 @@ async function act5(t: number) {
         x.restore();
       }
     }
-    // the overlays turn out to have been the app: Claude's log card settles into the real notes panel
-    const fly = inOut(prog(t, T.reveal + 0.15, 2.2));
-    const logRect = lerpBox(LOGCARD, camRect(cam, PANEL), fly);
-    drawLogCard(t, (1 - prog(t, T.reveal + 1.8, 0.55)) * expo(prog(t, T.reveal, 0.3)), { rect: logRect });
-    // and the pins fly home to their resolved cards
-    const starts = [{ x: W / 2 - 360, y: 900 }, { x: COL.x - 32, y: COL.y + COL.height * 0.25 }, { x: COL.x - 32, y: COL.y + COL.height * 0.6 }];
+    // Claude's log steps back as the real notes panel comes into frame
+    drawLogCard(t, (1 - inOut(prog(t, T.reveal + 0.3, 0.55))) * expo(prog(t, T.reveal, 0.25)));
+    // each note's pin rises from where it was made in the real editor and lands on its resolved tick:
+    // #1 the struck words in the transcript, #2 the picture (beside the face), #3 the ⌘K field
+    const origins: Box[] = [rects.words ?? { x: 120, y: 360, width: 0, height: 0 }, { x: F916.x + F916.width * 0.82, y: F916.y + F916.height * 0.3, width: 0, height: 0 }, SEARCH_K];
     for (let n = 1; n <= 3; n++) {
       const card = rects[`card${n}`];
       if (!card) continue;
       const tick = rects[`tick${n}`];
-      const at = T.reveal + 0.9 + (n - 1) * 0.14;
-      const pu = inOut(prog(t, at, 1.0));
+      const at = T.reveal + PIN_GO + (n - 1) * PIN_STAG;
+      const land = at + PIN_FLY;
+      if (t < at - 0.15 || t >= land + 0.6) continue;
       const tg = camRect(cam, tick ? { x: tick.x + tick.width / 2, y: tick.y + tick.height / 2, width: 0, height: 0 } : { x: card.x + 27, y: card.y + 21, width: 0, height: 0 });
+      const o = origins[n - 1];
+      const st = camRect(cam, { x: o.x + o.width / 2, y: o.y + o.height / 2, width: 0, height: 0 });
       const tickR = 10 * BASE * cam.z;
-      const s = starts[n - 1], p1 = { x: s.x, y: s.y - 220 }, p2 = { x: tg.x, y: tg.y - 160 };
-      const bez = (a: number, b: number, c2: number, d: number) => (1 - pu) ** 3 * a + 3 * (1 - pu) ** 2 * pu * b + 3 * (1 - pu) * pu * pu * c2 + pu ** 3 * d;
-      const land = at + 1.0;
-      if (pu < 1) pin(bez(s.x, p1.x, p2.x, tg.x), bez(s.y, p1.y, p2.y, tg.y), n, t, { resolvedAt: 0, alpha: expo(prog(t, at - 0.2, 0.3)) });
-      else if (t < land + 0.6) {
+      const p1 = { x: st.x, y: st.y - 140 }, p2 = { x: tg.x - 120, y: tg.y - 90 };
+      const at3 = (uu: number) => {
+        const bz = (a: number, b: number, c2: number, d: number) => (1 - uu) ** 3 * a + 3 * (1 - uu) ** 2 * uu * b + 3 * (1 - uu) * uu * uu * c2 + uu ** 3 * d;
+        return { x: bz(st.x, p1.x, p2.x, tg.x), y: bz(st.y, p1.y, p2.y, tg.y) };
+      };
+      const pu = inOut(prog(t, at, PIN_FLY));
+      if (t < land) {
+        const a = expo(prog(t, at - 0.15, 0.2));
+        // a short tapered lime streak so the flight reads as motion, not as a stray dot
+        const u0 = inOut(prog(t - 0.14, at, PIN_FLY));
+        x.save();
+        x.lineCap = "round";
+        for (let k = 0; k < 8; k++) {
+          const qa = at3(lerp(u0, pu, k / 8)), qb = at3(lerp(u0, pu, (k + 1) / 8));
+          x.strokeStyle = `rgba(232,244,124,${(0.5 * a * ((k + 1) / 8)).toFixed(3)})`;
+          x.lineWidth = 3 + 9 * ((k + 1) / 8);
+          x.beginPath();
+          x.moveTo(qa.x, qa.y);
+          x.lineTo(qb.x, qb.y);
+          x.stroke();
+        }
+        x.restore();
+        const q = at3(pu);
+        pin(q.x, q.y, n, t, { resolvedAt: 0, alpha: a, scale: lerp(0.6, 1, expo(prog(t, at - 0.15, 0.3))) });
+      } else {
         const q = expo(prog(t, land, 0.25));
         if (q < 1) pin(tg.x, tg.y, n, t, { resolvedAt: 0, alpha: 1 - q, scale: lerp(1, tickR / 17, q) });
         const p = prog(t, land, 0.6);
@@ -1099,31 +1204,96 @@ async function act5(t: number) {
         x.stroke();
       }
     }
-    line("", W / 2, 990, 46, t, T.reveal + 2.6, { leave: T.review - 0.35, runs: [{ text: "Every edit you just watched was a note.", color: "gradient" }] });
-    line("", W / 2, 1042, 32, t, T.reveal + 3.2, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Claude made them, over MCP.", color: GREY }] });
+    line("", W / 2, 990, 46, t, T.reveal + 1.7, { leave: T.review - 0.35, runs: [{ text: "Three notes. Claude made every change.", color: "gradient" }] });
+    line("", W / 2, 1042, 32, t, T.reveal + 2.1, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Over MCP, while you watched.", color: GREY }] });
   } else if (t < T.end) {
-    // review it like a pull request: the real Before/After
-    const u = inOut(prog(t, T.review, 0.7));
-    const cam: Cam = { x: lerp(camWide.x, camReview.x, u), y: lerp(camWide.y, camReview.y, u), z: lerp(camWide.z, camReview.z, u) };
+    // review it like a pull request: the real Before/After, pushed in on what changed
+    const u = inOut(prog(t, T.review, 0.8));
+    const cam: Cam = { x: lerp(camWide.x, camReview.x, u), y: lerp(camWide.y, camReview.y, u), z: Math.exp(lerp(Math.log(camWide.z), Math.log(camReview.z), u)) };
     const c = REVIEW_C0 + (t - T.review);
     const fadeOut = 1 - inOut(prog(t, T.end - 0.6, 0.6));
     await drawEditor(c, cam, fadeOut);
     const bc = ev["before-click"] ?? 0;
-    if (ev["before-not-unfolded"] !== undefined && c >= bc + 0.05 && c < (afterShown ?? bc + 2)) {
-      // the editor keeps the 9:16 preview, so the raw 16:9 take is shown letterboxed inside it
-      const pr = camRect(cam, F916);
+    const aT = afterShown ?? bc + 2;
+    const bIn = inOut(prog(c, bc + 0.05, 0.35)), bOut = inOut(prog(c, aT, 0.35));
+    const on = bIn * (1 - bOut);
+    const pr = camRect(cam, F916);
+    if (bIn > 0 && bOut < 1) {
       x.save();
       x.globalAlpha = fadeOut;
+      rrect(pr.x, pr.y, pr.width, pr.height, 4);
+      x.clip();
+      x.drawImage(await img(inner.v4(FINAL_IN + FINAL_LEN - 0.02)), pr.x, pr.y, pr.width, pr.height);
+      const x0 = pr.x + pr.width * bOut, x1 = pr.x + pr.width * bIn;
+      x.beginPath();
+      x.rect(x0, pr.y, x1 - x0, pr.height);
+      x.clip();
       x.fillStyle = "#000";
       x.fillRect(pr.x, pr.y, pr.width, pr.height);
       const h = (pr.width * 9) / 16;
       x.drawImage(await img(inner.v1(Math.min(dur.v1 - 0.05, c - bc))), pr.x, pr.y + (pr.height - h) / 2, pr.width, h);
-      if (rects.review) {
-        const f = await img(capFile(c));
-        const k = f.width / 1440, rr = camRect(cam, rects.review);
-        x.drawImage(f, rects.review.x * k, rects.review.y * k, rects.review.width * k, rects.review.height * k, rr.x, rr.y, rr.width, rr.height);
-      }
       x.restore();
+      const edge = bIn < 1 ? x1 : bOut > 0 ? x0 : -1;
+      if (edge > 0) {
+        x.fillStyle = LIME;
+        x.fillRect(edge - 1.5, pr.y, 3, pr.height);
+      }
+    }
+    if (rects.review) {
+      // the real review pill stays on top
+      const f = await img(capFile(c));
+      const k = f.width / 1440, rr = camRect(cam, rects.review);
+      x.save();
+      x.globalAlpha = fadeOut * u;
+      x.drawImage(f, rects.review.x * k, rects.review.y * k, rects.review.width * k, rects.review.height * k, rr.x, rr.y, rr.width, rr.height);
+      x.restore();
+    }
+    // point at what was cut, while Before shows it
+    if (on > 0 && rects.words) {
+      const wr = camRect(cam, rects.words);
+      x.save();
+      x.globalAlpha = on * fadeOut;
+      x.strokeStyle = CORAL;
+      x.lineWidth = 2.5;
+      x.shadowColor = "rgba(255,95,79,0.6)";
+      x.shadowBlur = 14;
+      rrect(wr.x - 8, wr.y - 8, wr.width + 16, wr.height + 16, 8);
+      x.stroke();
+      x.restore();
+    }
+    // labels a phone can read
+    const labelA = u * fadeOut;
+    if (labelA > 0) {
+      const lx = pr.x + pr.width + 48, ly = pr.y + pr.height / 2;
+      const chipFor = (title: string, sub: string, color: string, a: number) => {
+        if (a <= 0.01) return;
+        x.save();
+        x.globalAlpha = a * labelA;
+        x.font = "700 56px SF";
+        spacing(6);
+        const tw = x.measureText(title).width;
+        mono(28);
+        spacing(0);
+        const sw = x.measureText(sub).width;
+        const w = Math.max(tw, sw) + 56, h = 150;
+        // beside the preview, on whichever side has room
+        const left = lx + w <= W - 40 ? lx : pr.x - 48 - w;
+        x.translate(left - lx, 0);
+        rrect(lx, ly - h / 2, w, h, 14);
+        x.fillStyle = "rgba(10,10,11,0.78)";
+        x.fill();
+        x.font = "700 56px SF";
+        spacing(6);
+        x.fillStyle = color;
+        x.fillText(title, lx + 28, ly + 2);
+        spacing(0);
+        mono(28);
+        x.fillStyle = GREY;
+        x.fillText(sub, lx + 28, ly + 50);
+        x.restore();
+      };
+      chipFor("BEFORE", `${fmtDur(dur.v1)} · 16:9`, CORAL, on);
+      chipFor("AFTER", `${fmtDur(dur.v4)} · 9:16 · captions`, LIME, 1 - on);
     }
     const g = x.createLinearGradient(0, H - 230, 0, H);
     g.addColorStop(0, "rgba(6,6,7,0)");
@@ -1237,10 +1407,10 @@ const cues = {
     { at: filmOfCap(afterShown, T.review + 2.4), name: "restore" },
   ],
   working: [[T.working1, T.resolved1], [T.working2, T.fold], [T.working3, T.still]],
-  chimes: [{ at: T.resolved1, midi: 76 }, { at: T.resolved2, midi: 80 }, { at: T.resolved3, midi: 83 }, ...[0, 1, 2].map((k) => ({ at: T.reveal + 1.9 + k * 0.14, midi: [88, 92, 95][k] }))],
+  chimes: [{ at: T.resolved1, midi: 76 }, { at: T.resolved2, midi: 80 }, { at: T.resolved3, midi: 83 }, ...[0, 1, 2].map((k) => ({ at: T.reveal + PIN_GO + PIN_FLY + k * PIN_STAG, midi: [88, 92, 95][k] }))],
   silence: [T.still, T.bloom],
   arrival: T.bloom,
-  tonicAt: iFixes >= 0 ? T.final + V4[iFixes].start : T.final + FINAL_LEN - 1,
+  tonicAt: iFixes >= 0 ? T.final + V4[iFixes].start - FINAL_IN : T.final + FINAL_LEN - 1,
   endPulses: [0, 1, 2].map((k) => T.end + PULSE0 + k * 1.2),
   rewind: { from: T.rewind, to: T.pass2 },
   sfx: [
