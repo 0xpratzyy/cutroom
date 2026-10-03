@@ -1,12 +1,15 @@
 // Synthesizes the score for "Rough Cut" (E major, 100 BPM). The score is held back until the edit
 // lets it in: a phone-sketch piano (L0), a left hand and a room (L1), a pad (L2), half a second of
-// digital silence, then the first full chord (the first time the mix is stereo) and the full theme
-// resolving on the tonic. Levels (mastered to -14 LUFS integrated, LRA under 10 LU): the sketch sits
-// at about -22 LUFS momentary over a -40 dBFS room tone, the bed builds to about -17 by the silence,
-// and the arrival lands about 7 LU above that. Driven by the compositor's cues (launch/out/rough/
-// cues.json); without them, or with --defaults, it uses the beat sheet's own timings so it can be
-// tested standalone. No voice.
+// digital silence, then the first full chord (the first time the mix is stereo), the full theme from
+// the cut to the finished film resolving on the tonic, and a closing chord with the end card's logo
+// that holds under the card's pulses until the silence at the end. Levels (mastered to -14 LUFS
+// integrated, LRA under 10 LU): the sketch sits at about -22 LUFS momentary over a -40 dBFS room
+// tone, the bed builds to about -17 by the silence, the arrival lands about 7 LU above that, and the
+// end card holds about -17. The UI sounds sit a fixed distance under the music around them, in the
+// band a phone plays. Driven by the compositor's cues (launch/out/rough/cues.json); without them, or
+// with --defaults, it uses the beat sheet's own timings so it can be tested standalone. No voice.
 // Usage: npx tsx launch/rough/music-rough.mts [--defaults | --cues <file>]  ->  launch/out/rough/soundtrack.wav
+//        npx tsx launch/rough/music-rough.mts --sfx-only [--cues <file>]   ->  launch/out/rough/foley.wav (the UI sounds alone)
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,6 +20,21 @@ const BEAT = 0.6; // 100 BPM
 const BAR = BEAT * 4;
 const FRAME = 1 / 60; // the film's frame
 mkdirSync(OUT, { recursive: true });
+
+let seed = 7350211;
+const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
+const hz = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
+const db = (d: number) => Math.pow(10, d / 20);
+const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const saw = (ph: number) => 2 * (ph - Math.floor(ph + 0.5));
+const expoIn = (u: number) => (u <= 0 ? 0 : (Math.pow(2, 10 * u - 10) - 1 / 1024) / (1 - 1 / 1024));
+const panOf = (midi: number) => clamp((midi - 62) / 50, -0.35, 0.35); // low notes left, high right (after the arrival)
+const ramp = (t: number, t0: number, dur: number, a: number, b: number) => a + (b - a) * clamp((t - t0) / dur);
+const peakOf = (v: Float32Array) => v.reduce((m, x) => Math.max(m, Math.abs(x)), 0);
+const atPeak = (v: Float32Array, dB: number) => {
+  const g = db(dB) / (peakOf(v) || 1);
+  return v.map((x) => x * g);
+};
 
 // ---------------------------------------------------------------- cues (contract 5)
 type Layer = { at: number; name: string }; // 'L0' | 'L1' | 'L2' | 'full' | 'demo' | 'restore'
@@ -79,13 +97,9 @@ if (!fromFile && !process.argv.includes("--defaults")) console.warn(`cues: no ${
 const C: Cues = fromFile ? JSON.parse(readFileSync(FILE, "utf8")) : DEFAULT_CUES;
 for (const k of ["layers", "working", "chimes", "endPulses", "sfx"] as const) if (!Array.isArray(C[k])) (C as Record<string, unknown>)[k] = [];
 C.sections ??= {};
-if (fromFile) for (const k of ["duration", "silence", "arrival", "tonicAt", "rewind"] as const) if (C[k] == null) console.warn(`cues: no '${k}', deriving it`);
+const SFX_ONLY = process.argv.includes("--sfx-only");
+if (fromFile && !SFX_ONLY) for (const k of ["duration", "silence", "arrival", "tonicAt", "rewind"] as const) if (C[k] == null) console.warn(`cues: no '${k}', deriving it`);
 
-const DUR = C.duration ?? 46.5;
-const N = Math.round(DUR * SR);
-const S = (t: number) => Math.round(t * SR);
-const layers = [...C.layers].sort((a, b) => a.at - b.at);
-const cueAt = (name: string) => layers.find((l) => l.name === name)?.at;
 /** A section's start by name: 'reveal' matches reveal or s11_reveal, 'end' matches end, endcard or s13_endcard.
  *  The value is a time, or a scene object with start/from/at. */
 const section = (name: string) => {
@@ -93,6 +107,39 @@ const section = (name: string) => {
   const t = typeof v === "number" ? v : (v?.start ?? v?.from ?? v?.at);
   return typeof t === "number" && Number.isFinite(t) ? t : undefined;
 };
+const DUR = C.duration ?? section("filmEnd") ?? 46.5;
+const N = Math.round(DUR * SR);
+const S = (t: number) => Math.round(t * SR);
+const ELEVEN = "launch/out/eleven/sfx"; // recorded ElevenLabs click/key, used instead of the synthesized ones when present
+const recorded = new Map<string, Float32Array>();
+const usedEleven = new Set<string>();
+
+// --sfx-only: the UI sounds alone, to balance under another track. It reads only `duration` and `sfx`:
+// each known effect at its time, peaking at -12 dBFS (times its cue `gain`), dry, centred, no music, no
+// mastering -> launch/out/rough/foley.wav, 48 kHz stereo 32-bit float. Names it doesn't make are skipped.
+if (SFX_ONLY) {
+  const FOLEY_PEAK = -12;
+  const mono = new Float32Array(N);
+  const made: Record<string, number> = {};
+  for (const e of C.sfx) {
+    const v = typeof e.at === "number" ? sfxVoice(e) : undefined;
+    if (!v) {
+      console.warn(`sfx '${e.name}' at ${e.at}: not a sound this renders, skipped`);
+      continue;
+    }
+    const p = atPeak(v, FOLEY_PEAK), i0 = S(e.at), g = e.gain ?? 1;
+    for (let n = Math.max(0, -i0); n < p.length && i0 + n < N; n++) mono[i0 + n] += p[n] * g;
+    made[e.name] = (made[e.name] ?? 0) + 1;
+  }
+  const inter = new Float32Array(N * 2);
+  for (let n = 0; n < N; n++) inter[2 * n] = inter[2 * n + 1] = mono[n];
+  const FOLEY = join(OUT, "foley.wav");
+  writeFileSync(FOLEY, Buffer.concat([wav(N, 32), Buffer.from(inter.buffer)]));
+  console.log(`foley: ${Object.entries(made).map(([k, n]) => `${n} ${k}`).join(", ") || "nothing"} (${usedEleven.size ? `ElevenLabs: ${[...usedEleven].join(", ")}` : "synthesized"}) · peaks ${FOLEY_PEAK} dBFS · ${DUR.toFixed(3)} s · ${FOLEY}`);
+  process.exit(0);
+}
+const layers = [...C.layers].sort((a, b) => a.at - b.at);
+const cueAt = (name: string) => layers.find((l) => l.name === name)?.at;
 
 const silenceCue = cueAt("silence");
 const SIL: [number, number] | undefined = C.silence ?? (silenceCue !== undefined ? [silenceCue, C.arrival ?? silenceCue + 0.5] : undefined);
@@ -108,6 +155,9 @@ const resolves = C.chimes.filter((c) => c.midi < 88).sort((a, b) => a.at - b.at)
 const docks = C.chimes.filter((c) => c.midi >= 88).map((c) => c.at).sort((a, b) => a - b);
 const REVEAL = section("reveal") ?? (docks.length ? docks[0] - 1.1 : (TONIC ?? DUR) + 1.1);
 const ENDCARD = section("end") ?? (PULSES.length ? PULSES[0] - 2.6 : DUR - 6.5);
+const FALL = ENDCARD - 0.6; // the picture fades to black over the 0.6 s before the end card: the coda stops, the pad falls with it
+const HIT = ENDCARD + 0.35; // the closing chord, with the logo (it fades in from end + 0.25; the wordmark follows from + 0.7)
+const OUTRO = 0.45; // everything releases over this into the end gate: the card's chord is still sounding there
 const BED_END = SIL?.[0] ?? ARRIVAL ?? FULL ?? END_GATE;
 
 // Before/After toggles: the score collapses to the demo piano between each 'demo' and the next 'restore'.
@@ -152,25 +202,10 @@ type Bus = { L: Float32Array; R: Float32Array; send: Float32Array };
 const bus = (): Bus => ({ L: new Float32Array(N), R: new Float32Array(N), send: new Float32Array(N) });
 const F = bus(); // the score: rewinds, collapses on Before, scaled to the loudness target
 const A = bus(); // score elements specified in dBFS (heartbeat, pulse, rim, ticks, shimmer): collapse, never rescaled
-const X = bus(); // sound effects, in dBFS: never collapse
+const X = bus(); // sound effects, placed under the music around them (placeFx): never collapse
 const demoF = new Float32Array(N); // the phone-sketch piano where it is the score (the opening)
 const demoC = new Float32Array(N); // the same voice shadowing the coda: heard only on Before
 const room = new Float32Array(N);
-
-let seed = 7350211;
-const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
-const hz = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
-const db = (d: number) => Math.pow(10, d / 20);
-const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v));
-const saw = (ph: number) => 2 * (ph - Math.floor(ph + 0.5));
-const expoIn = (u: number) => (u <= 0 ? 0 : (Math.pow(2, 10 * u - 10) - 1 / 1024) / (1 - 1 / 1024));
-const panOf = (midi: number) => clamp((midi - 62) / 50, -0.35, 0.35); // low notes left, high right (after the arrival)
-const ramp = (t: number, t0: number, dur: number, a: number, b: number) => a + (b - a) * clamp((t - t0) / dur);
-const peakOf = (v: Float32Array) => v.reduce((m, x) => Math.max(m, Math.abs(x)), 0);
-const atPeak = (v: Float32Array, dB: number) => {
-  const g = db(dB) / (peakOf(v) || 1);
-  return v.map((x) => x * g);
-};
 
 type Place = { gain?: number; pan?: number; send?: number; until?: number };
 /** Writes a rendered voice at t; it is cut (3 ms) at the next hard stop, or at `until`. */
@@ -271,15 +306,29 @@ function bass(midi: number, len: number) {
   }
   return v;
 }
-/** A short sine pulse at f: the agent's heartbeat (52 Hz, 120 ms) and the end card's pulses. A faint
- *  2nd harmonic lets it read on small speakers. */
-function sub(f = 52, len = 0.12, attack = 0.006) {
+/** A short sine pulse at f: the agent's heartbeat (52 Hz, 120 ms) and the body of the end card's pulses.
+ *  `partials` are the harmonics' levels (the fundamental first); the upper ones die a little faster. */
+function sub(f = 52, len = 0.12, attack = 0.006, partials = [1, 0.12]) {
   const v = new Float32Array(S(len));
   for (let n = 0; n < v.length; n++) {
     const x = n / SR;
-    v[n] = (Math.sin(2 * Math.PI * f * x) + 0.12 * Math.sin(4 * Math.PI * f * x)) * Math.min(1, x / attack) * (1 - x / len) ** 2;
+    let s = 0;
+    partials.forEach((a, k) => a && (s += a * Math.sin(2 * Math.PI * f * (k + 1) * x) * (k > 1 ? Math.exp(-x * 3 * k) : 1)));
+    v[n] = s * Math.min(1, x / attack) * (1 - x / len) ** 2;
   }
   return v;
+}
+/** RBJ biquad as a one-sample filter: 'bp' peaks at 0 dB at fc, 'hp' is Butterworth at q = 0.707. */
+function biquad(type: "bp" | "hp", fc: number, q = Math.SQRT1_2) {
+  const w = (2 * Math.PI * fc) / SR, cw = Math.cos(w), al = Math.sin(w) / (2 * q), a0 = 1 + al;
+  const [b0, b1, b2] = type === "bp" ? [al / a0, 0, -al / a0] : [(1 + cw) / 2 / a0, -(1 + cw) / a0, (1 + cw) / 2 / a0];
+  const a1 = (-2 * cw) / a0, a2 = (1 - al) / a0;
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  return (x: number) => {
+    const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1; x1 = x; y2 = y1; y1 = y;
+    return y;
+  };
 }
 /** The final pass's soft pulse: a round sine kick with no click (not the long impact kick). */
 function softKick() {
@@ -336,66 +385,116 @@ function lowpass(v: Float32Array, fc: number) {
 }
 const rms = (v: Float32Array, a = 0, b = v.length) => Math.sqrt(v.subarray(a, b).reduce((s, x) => s + x * x, 0) / Math.max(1, b - a));
 
-// ---------------------------------------------------------------- sound effects (quiet, physical)
-/** Trackpad press/release: a 3 ms filtered click plus a tiny body thump. */
+/** RMS where a phone plays (high-passed at 300 Hz, two Butterworth stages) of at(i) over [a, b), with 20 ms of run-in. */
+function phoneRms(at: (i: number) => number, a: number, b: number) {
+  const h1 = biquad("hp", 300), h2 = biquad("hp", 300);
+  let sum = 0;
+  for (let i = a - S(0.02); i < b; i++) {
+    const y = h2(h1(i >= 0 ? at(i) : 0));
+    if (i >= a) sum += y * y;
+  }
+  return Math.sqrt(sum / Math.max(1, b - a));
+}
+
+// ---------------------------------------------------------------- sound effects (quiet, physical, dry)
+// Each carries its weight at 1-6 kHz, where the felt piano and the pad are thin and a phone still plays,
+// with only a trace of low body. Levels are set where they are placed (placeFx), against the music.
+/** Trackpad press/release: a dry tick. A contact burst under a millisecond rings short damped modes
+ *  (1.3/2.8/4.6 kHz for the press, a lighter 1.6/3.5/5.7 for the release), over a faint body. */
 function trackpad(press: boolean) {
-  const v = new Float32Array(S(0.06));
-  let a = 0, b = 0, ph = 0;
+  const v = new Float32Array(S(0.04));
+  const f0 = press ? 2800 : 3500;
+  const m0 = biquad("bp", f0 * 0.46, 4), m1 = biquad("bp", f0, 9), m2 = biquad("bp", f0 * 1.64, 7), air = biquad("bp", 7500, 1.2);
+  let pb = 0;
   for (let n = 0; n < v.length; n++) {
     const x = n / SR;
-    const w = rnd();
-    a += 0.55 * (w - a);
-    b += 0.12 * (a - b);
-    const click = (a - b) * (x < 0.003 ? 1 : Math.exp(-(x - 0.003) * 900));
-    ph += (2 * Math.PI * (press ? 115 : 150)) / SR;
-    v[n] = click + Math.sin(ph) * Math.min(1, x / 0.002) * Math.exp(-x * (press ? 70 : 110)) * (press ? 0.5 : 0.3);
+    const e = rnd() * Math.min(1, x / 0.0002) * Math.exp(-x / 0.0009);
+    pb += (2 * Math.PI * (press ? 150 : 180)) / SR;
+    const body = Math.sin(pb) * Math.min(1, x / 0.0015) * Math.exp(-x / 0.01);
+    v[n] = 1.2 * m0(e) + 3 * m1(e) + 2.2 * m2(e) + 0.5 * air(e) + body * (press ? 0.04 : 0.025);
   }
   return v;
 }
-/** Soft key tick (music.mts hat). */
+/** Soft key tick: a short plastic tick (two modes near 2.3 and 3.5 kHz, a slightly different key each
+ *  time) with a little air on top. */
 function keyTick() {
-  const v = new Float32Array(S(0.05));
-  let lp = 0;
+  const v = new Float32Array(S(0.03));
+  const f0 = 2300 * (1 + 0.08 * rnd());
+  const m1 = biquad("bp", f0, 5), m2 = biquad("bp", f0 * 1.52, 4), air = biquad("bp", 6500, 1);
   for (let n = 0; n < v.length; n++) {
-    const w = rnd();
-    lp += 0.5 * (w - lp);
-    v[n] = (w - lp) * Math.exp((-n / SR) * 70);
+    const x = n / SR;
+    const e = rnd() * Math.min(1, x / 0.00015) * Math.exp(-x / 0.0007);
+    v[n] = 2.4 * m1(e) + 1.6 * m2(e) + 0.6 * air(e);
   }
   return v;
 }
-/** The send 'tock': a short, muted wooden sine and noise at about 180 Hz. */
+/** The send 'tock': a muted wooden knock tuned to B (in every chord of the score). Its B4 mode, two
+ *  inharmonic ones near 1.3 and 2.5 kHz and a short contact carry it on a phone; a faint B3 body gives
+ *  it weight on bigger speakers. */
 function tock() {
-  const v = new Float32Array(S(0.12));
-  let p1 = 0, p2 = 0, lp = 0;
+  const v = new Float32Array(S(0.14));
+  const f = hz(71);
+  const contact = biquad("bp", 3200, 1.1);
+  let p0 = 0, p1 = 0, p2 = 0, p3 = 0;
   for (let n = 0; n < v.length; n++) {
     const x = n / SR;
-    const f = 172 + 14 * Math.exp(-x * 60);
-    p1 += (2 * Math.PI * f) / SR;
-    p2 += (2 * Math.PI * f * 2.76) / SR;
-    lp += 0.15 * (rnd() - lp);
-    v[n] = (Math.sin(p1) + 0.25 * Math.sin(p2) * Math.exp(-x * 60) + lp * 2.2 * Math.exp(-x * 400)) * Math.min(1, x / 0.0015) * Math.exp(-x * 38);
+    const bend = 1 + 0.03 * Math.exp(-x * 70); // the pitch drops a hair as it lands
+    p0 += (Math.PI * f * bend) / SR;
+    p1 += (2 * Math.PI * f * bend) / SR;
+    p2 += (2 * Math.PI * f * 2.61 * bend) / SR;
+    p3 += (2 * Math.PI * f * 5.12 * bend) / SR;
+    const modes = 0.35 * Math.sin(p0) * Math.exp(-x * 45) + Math.sin(p1) * Math.exp(-x * 38) + 0.55 * Math.sin(p2) * Math.exp(-x * 70) + 0.3 * Math.sin(p3) * Math.exp(-x * 140);
+    v[n] = modes * Math.min(1, x / 0.0012) + 1.5 * contact(rnd()) * Math.exp(-x / 0.0012);
   }
   return v;
 }
-/** A paper-soft noise burst (the words folding out). */
+/** The words folding away: a soft paper fold. Noise in two bands (2.2 and 5 kHz) that swells in over
+ *  about 15 ms and lets go, with a few fibre crackles. */
 function fold() {
-  const v = new Float32Array(S(0.15));
-  let a = 0, b = 0;
+  const v = new Float32Array(S(0.18));
+  const b1 = biquad("bp", 2200, 0.9), b2 = biquad("bp", 5000, 1.3), ck = biquad("bp", 4200, 3);
   for (let n = 0; n < v.length; n++) {
     const x = n / SR;
-    const w = rnd() + (Math.abs(rnd()) > 0.985 ? rnd() * 3 : 0);
-    a += 0.6 * (w - a);
-    b += 0.18 * (a - b);
-    v[n] = (a - b) * (1 - Math.exp(-x / 0.008)) * Math.exp(-x * 30);
+    const crackle = Math.abs(rnd()) > 0.992 ? rnd() * 6 : 0;
+    v[n] = (1 - Math.exp(-x / 0.006)) * Math.exp(-x * 24) * (1.2 * b1(rnd()) + 0.8 * b2(rnd())) + ck(crackle) * Math.exp(-x * 18);
   }
   return v;
 }
-/** Filtered air under the glide: pink noise, low-passed at 400 Hz, -40 dBFS RMS. */
+/** Air under the glide: pink noise through a band that rises from 600 Hz to 1.6 kHz and settles back as
+ *  the Short glides, with a little air above it. */
 function breath(dur: number) {
-  const v = lowpass(pink(S(dur)), 400);
-  v.forEach((x, n) => (v[n] = x * Math.pow(Math.sin((Math.PI * n) / v.length), 1.5)));
-  const g = db(-40) / (rms(v, v.length >> 2, (v.length * 3) >> 2) || 1);
-  return v.map((x) => x * g);
+  const src = pink(S(dur));
+  const v = new Float32Array(src.length);
+  const air = biquad("bp", 3000, 0.8);
+  let low = 0, band = 0;
+  for (let n = 0; n < v.length; n++) {
+    const u = n / v.length;
+    const f = 2 * Math.sin((Math.PI * (600 + 1000 * Math.sin(Math.PI * Math.pow(u, 0.8)))) / SR); // a state-variable band-pass, Q 0.9
+    low += f * band;
+    band += f * (src[n] - low - band / 0.9);
+    v[n] = (band + 0.12 * air(src[n])) * Math.pow(Math.sin(Math.PI * u), 1.5);
+  }
+  return v;
+}
+/** The voice for a cue's sound effect, or undefined for a name this score doesn't make. Recorded
+ *  ElevenLabs click/key replace the synthesized ones when present. */
+function sfxVoice(e: Sfx): Float32Array | undefined {
+  const file = join(ELEVEN, `${e.name}.mp3`);
+  if ((e.name === "click" || e.name === "key") && existsSync(file)) {
+    if (!recorded.has(e.name)) recorded.set(e.name, decode(file));
+    usedEleven.add(e.name);
+    return recorded.get(e.name)!;
+  }
+  const make: Record<string, () => Float32Array> = { click: () => trackpad(true), release: () => trackpad(false), key: keyTick, tock, fold, breath: () => breath(e.dur ?? 1.3) };
+  return Object.hasOwn(make, e.name) ? make[e.name]() : undefined;
+}
+/** The end pulses' felt knock: low E (E3) on a felted, damped string, with the hammer's thump. It is the
+ *  part of the pulse a phone or laptop plays. */
+function knock() {
+  const v = piano(52, 0.55, 0.55, 0.42);
+  const thump = biquad("bp", 600, 1.2);
+  for (let n = 0; n < v.length; n++) v[n] += 0.35 * thump(rnd()) * Math.exp(-n / SR / 0.008);
+  return v;
 }
 function decode(file: string) {
   const raw = execFileSync("ffmpeg", ["-v", "error", "-i", file, "-ac", "1", "-ar", String(SR), "-f", "f32le", "-"], { maxBuffer: 1 << 28 });
@@ -525,38 +624,48 @@ if (ARRIVAL !== undefined && !muted(ARRIVAL)) {
   }
 }
 
-// The final pass: the full theme over bass, pad, ostinato and a soft pulse, resolving on the tonic;
-// then the tonic rings into the reveal's pad, and a one-bar figure carries the coda on the same grid.
+// The final pass: the full theme over bass, pad, ostinato and a soft pulse, from the cut to the finished
+// film, resolving on the tonic; then the tonic rings into the reveal's pad, a one-bar figure carries the
+// coda on the same grid, and a closing chord lands with the end card's logo.
 if (FULL !== undefined && TONIC !== undefined) {
-  const k0 = Math.ceil((FULL - TONIC) / BEAT - 1e-6);
-  const beat = (k: number) => TONIC + k * BEAT;
+  // The grid is the tonic's (100 BPM), except before the tonic: there it is re-phased to the whole number
+  // of beats nearest 100 BPM between the cut and the tonic, so the groove enters on the cut ('full') and
+  // the theme still resolves on 'FIXES' (the arrival has no grid, so the shift isn't heard). Bars count
+  // back from the tonic; the beats left over make a short first bar that starts on the cut, so the cut
+  // plays as a downbeat.
+  const PRE = TONIC > FULL + 0.1 ? Math.max(1, Math.round((TONIC - FULL) / BEAT)) : 0;
+  const FBEAT = PRE ? (TONIC - FULL) / PRE : BEAT;
+  const k0 = -PRE; // beat(k0) === FULL
+  const beat = (k: number) => TONIC + k * (k < 0 ? FBEAT : BEAT);
+  const barPos = (k: number) => (k < k0 + (PRE % 4) ? k - k0 : ((k % 4) + 4) % 4); // 0: a downbeat
   for (const [k, m, held] of THEME) {
     for (let kk = k; beat(kk) >= FULL - 0.3; kk -= 8) {
-      // A pickup that falls just before the cue moves onto it, so the final pass still opens on B4–E5.
-      if (beat(kk) >= FULL - 1e-6 || kk % 1) place(F, Math.max(FULL, beat(kk)), piano(m, 0.6, held * BEAT + 1.6), { gain: 0.82, pan: 0.1, send: 0.3 });
-      if (k >= -8.5) break; // the last phrase plays once; the one before it repeats back to the cue
+      // A pickup that falls just before the cut moves onto it.
+      if (beat(kk) >= FULL - 1e-6 || kk % 1) place(F, Math.max(FULL, beat(kk)), piano(m, 0.6, held * FBEAT + 1.6), { gain: 0.82, pan: 0.1, send: 0.3 });
+      if (k >= -8.5) break; // the last phrase plays once; the one before it repeats back to the cut
     }
   }
-  for (let h = Math.ceil((FULL - TONIC) / (BEAT / 2) - 1e-6); h < 0; h++) {
+  for (let h = 2 * k0; h < 0; h++) {
     const m = slotAt(Math.floor(h / 2)).ost[[0, 2, 1, 3][((h % 4) + 4) % 4]];
-    place(F, TONIC + (h * BEAT) / 2, piano(m, 0.28, 1.4), { pan: panOf(m), send: 0.3 });
+    place(F, TONIC + (h * FBEAT) / 2, piano(m, 0.28, 1.4), { pan: panOf(m), send: 0.3 });
   }
-  for (let k = k0; k < 0; k++) if (k % 2 === 0 || k === k0) place(F, beat(k), bass(slotAt(k).bass, (k % 2 === 0 ? 2 : 1) * BEAT * 0.98), { gain: 0.4 });
+  for (let k = k0; k < 0; k++) if (k % 2 === 0 || k === k0) place(F, beat(k), bass(slotAt(k).bass, (k % 2 === 0 ? 2 : 1) * FBEAT * 0.98), { gain: 0.4 });
   for (let k = k0; beat(k) < REVEAL - 0.05; k++) {
     if (muted(beat(k))) continue;
     place(A, beat(k), atPeak(softKick(), -22));
-    if ([1, 3].includes(((k % 4) + 4) % 4)) place(A, beat(k), atPeak(rim(), -30), { pan: -0.1 });
+    if (barPos(k) % 2 === 1) place(A, beat(k), atPeak(rim(), -30), { pan: -0.1 });
   }
   // The tonic: E major, with the motif's E5 on top.
   // (Held level with the theme around it rather than above it: the arrival was the big moment.)
   [40, 47, 52, 56, 59, 64, 68, 76].forEach((m, k) => place(F, TONIC + (k && m !== 76 ? k * 0.014 : 0), piano(m, m === 76 ? 0.62 : 0.56, 6.5), { gain: 0.7, pan: panOf(m), send: 0.4 }));
   place(F, TONIC, bass(40, 3.2), { gain: 0.35 });
   place(F, TONIC, swell(hz(28), 2.2, 0.12), { gain: 0.02 });
-  // The coda: after the pins dock, the figure (and its demo-voice shadow) on the tonic's bar grid.
+  // The coda: after the pins dock, the figure (and its demo-voice shadow) on the tonic's bar grid, until
+  // the picture fades to black for the end card.
   const kCoda = 4 * Math.ceil((Math.max(REVEAL + 1.5, (docks[docks.length - 1] ?? 0) + 1) - TONIC) / BAR - 1e-6);
-  // Two bars of E add9, then two of A add9, never starting a bar that the end card would cut.
-  const harmony = (k: number) => (k < kCoda || Math.floor((k - kCoda) / 8) % 2 === 0 || beat(k - (k % 4)) + BAR > ENDCARD + 0.05 ? "E" : "A");
-  for (let k = 1; beat(k) < ENDCARD - 0.05; k++) {
+  // Two bars of E add9, then two of A add9, never starting a bar that the fade would cut.
+  const harmony = (k: number) => (k < kCoda || Math.floor((k - kCoda) / 8) % 2 === 0 || beat(k - (k % 4)) + BAR > FALL + 0.05 ? "E" : "A");
+  for (let k = 1; beat(k) < FALL - 0.05; k++) {
     const m = FIGURE[harmony(k)][k % 4];
     place(demoC, beat(k), piano(m, 0.5, 2.6));
     if (k < kCoda || muted(beat(k))) continue;
@@ -564,24 +673,41 @@ if (FULL !== undefined && TONIC !== undefined) {
     if (k % 4 === 0) (harmony(k) === "E" ? [40, 47] : [33, 40]).forEach((l, n) => place(F, beat(k) + n * 0.012, piano(l, 0.45, 3), { gain: 1.35, pan: -0.15, send: 0.35 }));
   }
   const CODA = beat(kCoda);
-  // The pad: the progression, the tonic, then a sustained E add9 that swells a little under the coda and
-  // falls away quickly at the end card (a slow fade from full level would sit in the loudness range's
-  // floor), leaving a faint tail (about -35 LUFS) that is gone by the first pulse, so the three pulses
-  // are heard on their own.
-  const tail = Math.max(ENDCARD + 0.8, Math.min(END_GATE, PULSES[0] ?? END_GATE) - 0.2);
-  const release = Math.min(1.6, tail - ENDCARD);
-  const endEnv = (t: number) => Math.max(Math.pow(1 - clamp((t - ENDCARD) / release), 4), 0.06 * Math.pow(1 - clamp((t - ENDCARD) / (tail - ENDCARD)), 1.5));
+  // The close: the coda's last note rings into the fade to black, the pad falls with the picture, and the
+  // closing chord lands with the logo: E add9 spread across the felt piano with the motif's G#5 on top
+  // (the coda's F#5 steps up to it), and the pad swelling back under it. The piano rings out under the
+  // card; the pad holds the card (about -17 LUFS: not dead air, and its loudness stays inside the film's
+  // range) under the pulses, until everything releases into the silence at the end.
+  const close = HIT < END_GATE - 1 && !muted(HIT);
+  if (close) {
+    const ring = END_GATE - HIT;
+    [40, 47, 52, 59, 66, 68, 80].forEach((m, k) => place(F, HIT + (m === 80 ? 0.03 : k * 0.016), piano(m, m === 80 ? 0.6 : 0.5, ring, 2.4), { gain: 0.42, pan: panOf(m), send: 0.45 }));
+    place(F, HIT, swell(hz(28), 2.4, 0.12), { gain: 0.025 });
+  }
+  // The pad: the progression, the tonic, then a sustained E add9 that swells a little under the coda,
+  // falls with the fade to black and comes back with the closing chord to hold under the card.
+  const CARD = 0.9, DIP = 0.12; // its level under the card, and where it has fallen to by the chord (the coda holds 2)
+  const swelled = (t: number) => (t < REVEAL ? 1 : ramp(t, REVEAL, 1.5, 1, 2));
+  const padEnv = (t: number) =>
+    t < FALL ? swelled(t)
+    : t < HIT || !close ? DIP + (swelled(FALL) - DIP) * Math.pow(1 - clamp((t - FALL) / (HIT - FALL)), 2)
+    : DIP + (CARD - DIP) * Math.sin((Math.PI / 2) * clamp((t - HIT) / 0.35)) ** 2;
   pad(
     F, FULL, END_GATE,
-    (t) => (t < TONIC ? slotAt(Math.floor((t - TONIC) / BEAT)).pad : t < REVEAL ? TONIC_PAD : t >= CODA && t < ENDCARD && harmony(Math.floor((t - TONIC) / BEAT)) === "A" ? CH.A.pad : CH.E.pad),
-    (t) => (t < TONIC ? 1250 : t < REVEAL ? 1300 : t < ENDCARD ? 1000 : ramp(t, ENDCARD, tail - ENDCARD, 1000, 500)),
-    (t) => Math.min(1, (t - FULL) / 0.1) * (t < REVEAL ? 1 : t < ENDCARD ? ramp(t, REVEAL, 1.5, 1, 2) : 2 * endEnv(t)),
+    (t) => (t < TONIC ? slotAt(Math.floor((t - TONIC) / FBEAT + 1e-6)).pad : t < REVEAL ? TONIC_PAD : t >= CODA && t < FALL && harmony(Math.floor((t - TONIC) / BEAT)) === "A" ? CH.A.pad : CH.E.pad),
+    (t) => (t < TONIC ? 1250 : t < REVEAL ? 1300 : t < FALL ? 1000 : t < HIT ? ramp(t, FALL, HIT - FALL, 1000, 700) : ramp(t, HIT, 0.5, 700, 950)),
+    (t) => Math.min(1, (t - FULL) / 0.1) * padEnv(t),
     0.9,
   );
 }
 
-// The end card: three soft 52 Hz pulses with the waiting dot, then silence.
-for (const p of PULSES) if (!muted(p)) place(A, p, atPeak(sub(52, 0.42, 0.015), -27));
+// The end card's pulses, with the waiting dot: the agent's 52 Hz heartbeat with its 2nd and 4th harmonics
+// (felt on headphones) and a soft felt knock on low E that phones and laptops play.
+for (const p of PULSES) {
+  if (muted(p)) continue;
+  place(A, p, atPeak(sub(52, 0.42, 0.015, [1, 0.5, 0, 0.3]), -27));
+  place(A, p, atPeak(knock(), -17), { pan: 0.05, send: 0.25 });
+}
 
 // Room tone under the opening, until the silence: pink noise, low-passed at 6 kHz, -40 dBFS RMS.
 {
@@ -591,25 +717,23 @@ for (const p of PULSES) if (!muted(p)) place(A, p, atPeak(sub(52, 0.42, 0.015), 
   for (let n = 0; n < end; n++) room[n] = v[n] * g * (1 + 0.1 * Math.sin((2 * Math.PI * 0.11 * n) / SR)) * Math.min(1, n / S(0.02), (end - n) / S(0.003));
 }
 
-// Sound effects. Recorded ElevenLabs click/key replace the synthesized ones when present.
+// Sound effects: dry, and each a fixed distance (SFX_REL, dB) under the music around it in the band a
+// phone plays: its first 12 ms (the whole of it, for the breath), high-passed at 300 Hz, against the mix
+// over the 150 ms from just before it (over its span, for the breath). They are rendered here and placed
+// with the master (placeFx), once the music under them and its gain are known.
 const BANNED = new Set(["boing", "squeak", "pop", "riser", "whoosh", "clap", "impact", "slam", "squeal", "tape"]);
-const SFX_PEAK: Record<string, number> = { click: -33, release: -37, key: -38, tock: -25, fold: -36 };
-const ELEVEN = "launch/out/eleven/sfx";
-const recorded = new Map<string, Float32Array>();
-const usedEleven = new Set<string>();
+const SFX_REL: Record<string, number> = { click: -8, release: -10, key: -13, tock: -7, fold: -8, breath: -13 };
+type Fx = { at: number; v: Float32Array; own: number; win: [number, number]; rel: number; gain: number; pan: number; bed: [number, number] };
+const fx: Fx[] = [];
 for (const e of C.sfx) {
   if (BANNED.has(e.name)) console.warn(`sfx '${e.name}' at ${e.at} is banned in this film: skipped`);
   else if (gated(e.at)) continue;
-  else if (e.name === "breath") place(X, e.at, breath(e.dur ?? 1.3), { gain: e.gain ?? 1 });
-  else if (e.name in SFX_PEAK) {
-    const file = join(ELEVEN, `${e.name}.mp3`);
-    let v: Float32Array;
-    if ((e.name === "click" || e.name === "key") && existsSync(file)) {
-      if (!recorded.has(e.name)) recorded.set(e.name, decode(file));
-      v = recorded.get(e.name)!;
-      usedEleven.add(e.name);
-    } else v = e.name === "click" ? trackpad(true) : e.name === "release" ? trackpad(false) : e.name === "key" ? keyTick() : e.name === "tock" ? tock() : fold();
-    place(X, e.at, atPeak(v, SFX_PEAK[e.name]), { gain: e.gain ?? 1, pan: e.name === "key" ? rnd() * 0.2 : 0 });
+  else if (Object.hasOwn(SFX_REL, e.name)) {
+    const v = sfxVoice(e)!;
+    const whole = e.name === "breath";
+    const own = phoneRms((i) => v[i] ?? 0, 0, whole ? v.length : Math.min(v.length, S(0.012)));
+    const win: [number, number] = whole ? [e.at, e.at + v.length / SR] : [e.at - 0.025, e.at + 0.125];
+    fx.push({ at: e.at, v, own, win, rel: SFX_REL[e.name], gain: e.gain ?? 1, pan: e.name === "key" ? rnd() * 0.2 : 0, bed: [0, 0] });
   } else console.warn(`unknown sfx '${e.name}' at ${e.at}: skipped`);
 }
 
@@ -689,6 +813,24 @@ const edge = S(0.004);
 for (const [a, b] of DEMO)
   for (let i = Math.max(0, S(a) - edge); i < Math.min(N, S(b) + edge); i++) full[i] = Math.min(full[i], 1 - clamp(Math.min(i - S(a) + edge, S(b) + edge - i) / edge));
 
+// The music under each sound effect where a phone plays, as heard (after the Before/After switch): the
+// power of the score's part, which the music gain scales, and of the parts in dBFS (A bus, room tone).
+for (const f of fx) {
+  const [a, b] = [S(f.win[0]), Math.min(N, S(f.win[1]))];
+  const score = phoneRms((i) => full[i] * 0.5 * (F.L[i] + F.R[i]) + (1 - full[i]) * sketchC[i], a, b);
+  const fixed = phoneRms((i) => full[i] * 0.5 * (A.L[i] + A.R[i]) + room[i], a, b);
+  f.bed = [score * score, fixed * fixed];
+}
+/** Places the sound effects for a music gain: each SFX_REL dB under the music around it. Over near-silence
+ *  (the poster's first click has only room tone under it) they are placed as if over a quiet bed (-38 dBFS). */
+function placeFx(music: number) {
+  for (const b of [X.L, X.R, X.send]) b.fill(0);
+  for (const f of fx) {
+    const bed = Math.max(Math.sqrt(music * music * f.bed[0] + f.bed[1]), db(-38));
+    place(X, f.at, f.v, { gain: ((db(f.rel) * bed) / (f.own || 1)) * f.gain, pan: f.pan });
+  }
+}
+
 /** Linked look-ahead peak limiter (1.5 ms look-ahead, 80 ms release), so loudnorm can stay linear. */
 function limit(L: Float32Array, R: Float32Array, ceilingDb: number) {
   const c = db(ceilingDb), W = S(0.0015), rel = 1 - Math.exp(-1 / (0.08 * SR));
@@ -711,13 +853,19 @@ function limit(L: Float32Array, R: Float32Array, ceilingDb: number) {
   return -20 * Math.log10(min);
 }
 function mix(music: number, ceilingDb: number) {
+  placeFx(music);
   const L = new Float32Array(N), R = new Float32Array(N);
-  const stereo = S(STEREO);
+  const stereo = S(STEREO), o0 = S(END_GATE - OUTRO), o1 = S(END_GATE);
   for (let n = 0; n < N; n++) {
     const f = full[n];
     let l = music * (F.L[n] * f + sketchC[n] * (1 - f)) + A.L[n] * f + X.L[n] + room[n];
     let r = music * (F.R[n] * f + sketchC[n] * (1 - f)) + A.R[n] * f + X.R[n] + room[n];
     if (n < stereo) l = r = (l + r) / 2; // the arrival is the first time the mix is stereo
+    if (n >= o0 && n < o1) {
+      const g = Math.cos((Math.PI / 2) * ((n - o0) / (o1 - o0))) ** 2; // the end: a release into the gate, not a cut
+      l *= g;
+      r *= g;
+    }
     L[n] = l;
     R[n] = r;
   }

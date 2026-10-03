@@ -1,18 +1,20 @@
-// "Rough Cut": the launch film Claude edits while you watch. The film opens as its own rough
-// cut; a cursor points at what's wrong on the picture; Claude, connected over MCP, edits the
-// film you're watching (cuts the false start, turns the box into a 9:16 Short, grades and
-// captions it); then the camera pulls back into the real cutroom project and the film ends
-// inside a live wait_for_feedback call.
+// "Rough Cut": the launch film Claude edits while you watch. The cutroom mark is cut out of a note
+// pin and the camera flies through it into the film's own rough cut, which stammers and pauses; a
+// cursor points at what's wrong on the picture; Claude, connected over MCP, edits the film you're
+// watching (cuts the false start, turns the box into a 9:16 Short, grades and captions it); then
+// the camera pulls back into the real cutroom project, and the film ends inside a live
+// wait_for_feedback call before the waiting dot is cut back into the mark.
 //
 // Every picture state is a genuine cutroom export of the captured session (states.mts); the
 // MCP log lines are the real calls (mcp-log.jsonl), time-compressed only while the picture is
 // paused; the transitions between states (rewind, fold, bloom, caption lift) are composited here.
+// The narrator's lines (vo.mts) set the holds: each pause lasts as long as the longest read needs.
 //
 // Usage: npx tsx launch/rough/rough.mts [--cues] [--only=1.2,14] -> launch/out/rough/film-video.mp4
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createCanvas, GlobalFonts, loadImage, type Image, type SKRSContext2D } from "@napi-rs/canvas";
+import { createCanvas, GlobalFonts, loadImage, Path2D, type Image, type SKRSContext2D } from "@napi-rs/canvas";
 import { computeCrop } from "../../src/core/shared/timeline.ts";
 import { bindPremium, clamp, CORAL, expo, line, stage } from "../premium.mts";
 
@@ -91,6 +93,16 @@ function noteStory(n: number) {
 }
 const story = [1, 2, 3].map(noteStory);
 
+// The narrator (vo.mts writes one vo-<take>.json per read). One picture serves every read, so each
+// hold is sized for the slowest take of its line.
+type VoLine = { end: number; words: { w: string; s: number; e: number }[] };
+const voTakes = readdirSync(OUT).filter((f) => /^vo-\w+\.json$/.test(f)).map((f) => JSON.parse(readFileSync(join(OUT, f), "utf8")) as { take: string; lines: Record<string, VoLine> });
+const VO_GUESS: Record<string, number> = { launch: 1.5, rough: 1.1, notes: 2.6, claude: 2.0, what: 4.4, point: 2.3, ask: 1.2, three: 2.7, review: 1.8, name: 0.7, tagline: 2.3, turn: 0.8 };
+/** When the line's last word ends, in the slowest take. */
+const voEnd = (id: string) => (voTakes.length ? Math.max(...voTakes.map((v) => v.lines[id]?.end ?? VO_GUESS[id])) : VO_GUESS[id]);
+/** When word k of the line starts, in the slowest take. */
+const voWord = (id: string, k: number) => (voTakes.length ? Math.max(...voTakes.map((v) => v.lines[id]?.words[k]?.s ?? 0)) : 0);
+
 // ---------------------------------------------------------------- inner film (genuine exports)
 function decode(state: string, size: string, fps = INNER_FPS, extra = "", key = state) {
   const d = join(OUT, "frames", key);
@@ -126,30 +138,53 @@ const FINAL_LEN = (iFixes >= 0 ? Math.min(dur.v4 ?? 7, (V4[iFixes + 1] ?? V4[iFi
 const RW_FPS = 120;
 const v1Rewind = decode("v1", "1920:1080", RW_FPS, `trim=0:${(TL1 + 0.3).toFixed(2)},minterpolate=fps=${RW_FPS}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,`, `v1-rw-${TL1.toFixed(2)}`);
 
-// ---------------------------------------------------------------- timeline (sequential, adapted to the take)
+// ---------------------------------------------------------------- timeline (sequential, adapted to the take and the reads)
+const ZOOM_LEN = 0.6; // the flight through the mark's counter into the take
+const EXIT_LEN = 2.8; // the end card dissolves to its waiting dot, which is cut back into the mark
 const T = (() => {
   const t: Record<string, number> = {};
   let at = 0;
   const mark = (k: string, d = 0) => ((t[k] = at), (at += d));
+  // entry: a note pin lands on black, a lime cut makes it the cutroom mark, the camera flies through
+  mark("entry");
+  t.pinIn = 0.2; t.cutMark = 0.85; t.zoom = 1.55;
+  at = t.zoom;
+  // cold open: the rough cut plays from its first frame, sound and all, and pauses after the stammer
+  mark("cold");
+  at += TL1;
+  mark("pause1");
+  t.voLaunch = at + 0.3;
+  t.voRough = t.voLaunch + voEnd("launch") + 0.25;
+  at = t.voRough + 0.2;
+  // note 1: the cursor comes in as the narrator calls it a rough cut, drags across the stammer, types the note
   mark("poster");
-  t.dragEnd = 0.5; t.noteOpen = 0.55; t.noteSend = 1.4;
-  at = 1.6;
+  t.dragStart = at + 0.5; t.dragEnd = t.dragStart + 0.55; t.noteOpen = t.dragEnd + 0.1;
+  t.voNotes = Math.max(t.voRough + voEnd("rough") + 0.2, t.dragStart - 0.3);
+  t.noteSend = Math.max(t.noteOpen + 0.85, t.voNotes + voEnd("notes") + 0.1);
+  at = t.noteSend + 0.2;
   mark("turn1"); t.wait1 = at + 0.05; t.working1 = at + 0.6; t.edit1 = at + 1.4; t.strike1 = at + 1.75; t.fold1 = at + 1.95; t.resolved1 = at + 2.4;
-  at += 2.8;
+  at += 3.3;
   mark("rewind", 1.0);
-  mark("pass2"); t.badge = at + 0.1; t.claude = at + 0.6; t.claude2 = at + 1.2;
+  mark("pass2"); t.badge = at + 0.1;
   at += Math.max(1.6, TL2);
-  mark("freeze2"); t.copyLeave = Math.max(at + 0.9, t.claude2 + 2.4);
+  mark("freeze2");
+  t.voClaude = at + 0.2;
+  t.claude = t.voClaude + voWord("claude", 2) - 0.05;
+  t.voWhat = t.voClaude + voEnd("claude") + 0.25;
+  t.claude2 = t.voWhat - 0.05; t.claude3 = t.voWhat + voWord("what", 4) - 0.05;
+  t.copyLeave = t.voWhat + voEnd("what") + 0.45;
   at = t.copyLeave + 0.25;
-  mark("box"); t.boxDown = at + 0.55; t.boxUp = at + 1.3; t.note2Open = at + 1.45; t.note2Send = at + 2.4;
-  at += 2.5;
+  mark("box"); t.boxDown = at + 0.55; t.boxUp = at + 1.3; t.note2Open = at + 1.45;
+  t.voPoint = t.boxDown - 0.1;
+  t.note2Send = Math.max(at + 2.4, t.voPoint + voEnd("point") + 0.1);
+  at = t.note2Send + 0.1;
   mark("turn2"); t.wait2 = at + 0.05; t.working2 = at + 0.55; t.edit2 = at + 1.55;
   at += 2.0;
   mark("fold"); t.glide = at + 0.65; t.glideEnd = at + 2.15; t.resolved2 = at + 2.2;
   at += 2.3;
   mark("pass3");
   at += Math.max(1.4, TL3 - TL2);
-  mark("freeze3"); t.cursorUp = at - 0.25; t.cmdK = at + 0.05; t.palette = at + 0.1; t.askSend = at + 1.95; t.cursorOut = at + 2.1;
+  mark("freeze3"); t.cursorUp = at - 0.25; t.cmdK = at + 0.05; t.palette = at + 0.1; t.voAsk = at + 0.2; t.askSend = at + 1.95; t.cursorOut = at + 2.1;
   at += 2.1;
   mark("turn3"); t.wait3 = at + 0.1; t.working3 = at + 0.7; t.edit3a = at + 1.4; t.edit3b = at + 1.9;
   at += 2.4;
@@ -159,15 +194,24 @@ const T = (() => {
   mark("snap", 0.45);
   mark("final", FINAL_LEN);
   mark("finalEnd", 0.15);
-  mark("reveal", 4.2);
+  mark("reveal"); t.voThree = at + 1.5;
+  at += Math.max(4.2, 1.5 + voEnd("three") + 0.6);
+  // review: the push-in and its line, then Before (the stammer, heard again), then After
+  mark("review"); t.voReview = at + 0.15;
+  t.reviewPre = Math.max(0.4, 0.15 + voEnd("review") + 0.2);
   const bc = ev["before-click"] ?? 0, ac = ev["after-click"] ?? bc + 2;
-  mark("review", Math.max(4.2, ac + 1.4 - (bc - 0.4)));
-  mark("end", 6.8);
+  at += Math.max(4.2, t.reviewPre + (ac - bc) + 1.2);
+  // the end card says its name and its line, then hands it to you
+  mark("end"); t.voName = at + 0.7; t.tagIn = t.voName + voEnd("name") + 0.25; t.voTagline = t.tagIn;
+  t.waitIn = t.tagIn + 1.0; t.pillIn = t.waitIn + 0.5; t.footIn = t.pillIn + 0.3;
+  t.voTurn = Math.max(t.pillIn + 0.4, t.voTagline + voEnd("tagline") + 0.2);
+  at = t.voTurn + voEnd("turn") + 0.6;
+  mark("exit", EXIT_LEN);
   mark("filmEnd");
   return t;
 })();
 const DUR = T.filmEnd;
-const REVIEW_C0 = (ev["before-click"] ?? 0) - 0.4;
+const REVIEW_C0 = (ev["before-click"] ?? 0) - T.reviewPre;
 
 // ---------------------------------------------------------------- canvas + helpers
 const canvas = createCanvas(W, H);
@@ -390,27 +434,40 @@ function layoutLine(words: Word[], size: number, cx: number, collapse?: { idx: S
   });
 }
 type LineBox = ReturnType<typeof layoutLine>[number];
-function drawLine(boxes: LineBox[], y: number, size: number, tl: number, o: { alpha?: number; strike?: { idx: Set<number>; u: number }; fade?: { idx: Set<number>; u: number }; select?: { idx: Set<number>; u: number } } = {}) {
+const bandC = createCanvas(2400, 200), bandX = bandC.getContext("2d") as SKRSContext2D;
+function drawLine(boxes: LineBox[], y: number, size: number, tl: number, o: { alpha?: number; strike?: { idx: Set<number>; u: number }; fade?: { idx: Set<number>; u: number }; select?: { idx: Set<number>; u: number; a?: number } } = {}) {
   const a = o.alpha ?? 1;
   if (a <= 0) return;
   mono(size);
   x.save();
   x.globalAlpha = a;
-  // a soft band behind the line keeps it legible over any picture
+  // a soft band behind the line keeps it legible over any picture; it feathers out at both ends
   if (boxes.length) {
     const l0 = boxes[0].x, l1 = boxes[boxes.length - 1].x + boxes[boxes.length - 1].shown;
-    const g = x.createLinearGradient(0, y - size * 1.6, 0, y + size * 0.9);
+    const bw = Math.min(bandC.width, Math.ceil(l1 - l0 + 240)), bh = Math.ceil(size * 2.5);
+    bandX.globalCompositeOperation = "source-over";
+    bandX.clearRect(0, 0, bandC.width, bandC.height);
+    const g = bandX.createLinearGradient(0, 0, 0, bh);
     g.addColorStop(0, "rgba(6,6,7,0)");
     g.addColorStop(0.5, "rgba(6,6,7,0.42)");
     g.addColorStop(1, "rgba(6,6,7,0)");
-    x.fillStyle = g;
-    x.fillRect(l0 - 60, y - size * 1.6, l1 - l0 + 120, size * 2.5);
+    bandX.fillStyle = g;
+    bandX.fillRect(0, 0, bw, bh);
+    bandX.globalCompositeOperation = "destination-in";
+    const f = bandX.createLinearGradient(0, 0, bw, 0), e = Math.min(0.45, 120 / bw);
+    f.addColorStop(0, "rgba(0,0,0,0)");
+    f.addColorStop(e, "rgba(0,0,0,1)");
+    f.addColorStop(1 - e, "rgba(0,0,0,1)");
+    f.addColorStop(1, "rgba(0,0,0,0)");
+    bandX.fillStyle = f;
+    bandX.fillRect(0, 0, bw, bh);
+    x.drawImage(bandC, 0, 0, bw, bh, l0 - 120, y - size * 1.6, bw, bh);
   }
   if (o.select && o.select.u > 0) {
     const sel = boxes.filter((b) => o.select!.idx.has(b.w.i));
     if (sel.length) {
       const x0 = sel[0].x - 8, x1 = sel[sel.length - 1].x + sel[sel.length - 1].width + 8;
-      x.fillStyle = "rgba(255,95,79,0.42)";
+      x.fillStyle = `rgba(255,95,79,${(0.42 * (o.select.a ?? 1)).toFixed(3)})`;
       rrect(x0, y - size * 0.95, (x1 - x0) * o.select.u, size * 1.3, 5);
       x.fill();
     }
@@ -458,18 +515,52 @@ function burn(text: string, px: number, py: number, size: number, alpha: number,
   spacing(0);
   return w;
 }
-function hudFull(s: HudState, alpha = 1) {
+/** A transport burn-in: a play triangle or two pause bars (no font has a pause glyph we can trust), then the text. */
+function burnTransport(paused: boolean, text: string, right: number, py: number, size: number, alpha: number) {
+  const iw = size * 0.62, gap = text ? size * 0.45 : 0;
+  mono(size);
+  spacing(1.5);
+  const tw = text ? x.measureText(text).width : 0;
+  const left = right - tw - gap - iw;
+  x.save();
+  x.globalAlpha = alpha * 0.55;
+  x.fillStyle = "rgba(0,0,0,0.6)";
+  rrect(left - 12, py - size - 4, iw + gap + tw + 24, size + 16, 6);
+  x.fill();
+  x.globalAlpha = alpha;
+  x.fillStyle = "#fff";
+  const top = py - size * 0.78, h = size * 0.78;
+  if (paused) {
+    x.fillRect(left, top, iw * 0.34, h);
+    x.fillRect(left + iw * 0.66, top, iw * 0.34, h);
+  } else {
+    x.beginPath();
+    x.moveTo(left, top);
+    x.lineTo(left + iw, top + h / 2);
+    x.lineTo(left, top + h);
+    x.closePath();
+    x.fill();
+  }
+  if (text) x.fillText(text, left + iw + gap, py);
+  x.restore();
+  spacing(0);
+}
+const mixHex = (a: string, b: string, u: number) => {
+  const p = (h: string, k: number) => parseInt(h.slice(1 + 2 * k, 3 + 2 * k), 16);
+  return `rgb(${[0, 1, 2].map((k) => Math.round(lerp(p(a, k), p(b, k), clamp(u)))).join(",")})`;
+};
+function hudFull(s: HudState, alpha = 1, hot = 0) {
   if (alpha <= 0) return;
   const slug = s.final ? "LAUNCH FILM · FINAL" : `ROUGH CUT ${s.version} · ${s.aspect} · ${fmtDur(s.durS)}`;
-  burn(slug, 52, 70, 28, alpha * 0.9);
-  if (!s.final) burn(`${s.paused ? "❚❚ " : "▶ "}${fmtTC(s.tl)}`, W - 52, 70, 28, alpha * 0.8, "#fff", "right");
+  burn(slug, 52, 70, 28, alpha * (0.9 + 0.1 * hot), hot > 0.01 ? mixHex("#ffffff", LIME, hot) : "#fff");
+  if (!s.final) burnTransport(s.paused, fmtTC(s.tl), W - 52, 70, 28, alpha * 0.8);
 }
 function hudColumn(t: number, s: HudState, col: Box, alpha = 1, flashAspectAt?: number) {
   if (alpha <= 0) return;
   const flash = flashAspectAt !== undefined && t >= flashAspectAt && t < flashAspectAt + 0.5;
   const slug = s.final ? "LAUNCH FILM · FINAL" : `ROUGH CUT ${s.version} · ${s.aspect}`;
   burn(slug, col.x, col.y - 22, 22, alpha * 0.85, flash ? LIME : "#fff");
-  if (!s.final) burn(s.paused ? "❚❚" : "▶", col.x + col.width, col.y - 22, 22, alpha * 0.75, "#fff", "right");
+  if (!s.final) burnTransport(s.paused, "", col.x + col.width, col.y - 22, 22, alpha * 0.75);
 }
 
 // ---------------------------------------------------------------- Claude's log (a glass card, real calls)
@@ -646,7 +737,7 @@ const CROP: Box = { x: (crop.x / crop.width) * W, y: 0, width: (1080 / crop.widt
 const COL: Box = { x: 560, y: 72, width: 472.5, height: 840 };
 const COLF: Box = { x: (W - 540) / 2, y: 60, width: 540, height: 960 };
 const COLCX = COL.x + COL.width / 2;
-const PAL_CROP_W = 480, PAL_SCALE = 2.9, PAL_Y = COL.y + 200; // the palette's query row at ~44 px on canvas
+const PAL_SCALE = 2.3, PAL_Y = COL.y + 200; // the whole palette, its query row at ~35 px on canvas
 const region2 = story[1].region ?? { x: CROP.x / W, y: 0, w: CROP.width / W, h: 1 };
 // The note's region is the full-height crop; the gesture is drawn inset so its corners and the drag read
 // (also on a phone); the fold then opens it out onto cutroom's real full-height crop.
@@ -685,24 +776,32 @@ function scrimRight(alpha: number) {
   x.fillStyle = g;
   x.fillRect(980, 0, W - 980, H);
 }
+// the rewind leaves from the frame the living still is showing, so it never pops forward first
+const RW_FROM = TL1 - 0.25 * (1 - Math.cos((T.rewind - T.pause1) * 0.42)) * 0.5;
+const rewindTl = (t: number) => RW_FROM * (1 - inOut((t - T.rewind) / (T.pass2 - T.rewind)));
+const TR1 = { y: 1000, size: 46 }; // the 16:9 transcript line
 async function act1(t: number) {
-  // picture
-  if (t < T.rewind) await drawLiving(DEC.v1, TL1, t, FULL, 0.25);
-  else if (t < T.pass2) {
-    const tl = TL1 * (1 - inOut((t - T.rewind) / (T.pass2 - T.rewind)));
-    x.drawImage(await img(v1Rewind.at(tl)), 0, 0, W, H);
-  } else if (t < T.freeze2) {
-    x.drawImage(await img(inner.v2(t - T.pass2)), 0, 0, W, H);
-    if (t < T.pass2 + 2 / FPS) {
-      x.fillStyle = "rgba(0,0,0,0.82)";
-      x.fillRect(0, 0, W, H);
-    }
-  } else await drawLiving(DEC.v2, TL2, t - T.freeze2, FULL, 0.2);
-  const tlNow = t < T.rewind ? TL1 : t < T.pass2 ? TL1 * (1 - inOut((t - T.rewind) / (T.pass2 - T.rewind))) : Math.min(TL2, t - T.pass2);
+  // picture: the cold open plays, the stammer's end holds, the rewind runs home, pass 2 plays and holds
+  if (t < T.pause1) x.drawImage(await img(inner.v1(t - T.cold)), 0, 0, W, H);
+  else if (t < T.rewind) await drawLiving(DEC.v1, TL1, t - T.pause1, FULL, 0.25);
+  else if (t < T.pass2) x.drawImage(await img(v1Rewind.at(rewindTl(t))), 0, 0, W, H);
+  else if (t < T.freeze2) x.drawImage(await img(inner.v2(t - T.pass2)), 0, 0, W, H);
+  else await drawLiving(DEC.v2, TL2, t - T.freeze2, FULL, 0.2);
+  // the rewind lands behind a short eased dip that hides the pose change between the two takes
+  const dipA = 0.85 * Math.sin(Math.PI * prog(t, T.pass2 - 0.05, 0.1));
+  if (dipA > 0.01) {
+    x.fillStyle = `rgba(0,0,0,${dipA.toFixed(3)})`;
+    x.fillRect(0, 0, W, H);
+  }
+  const tlNow = t < T.pause1 ? Math.max(0, t - T.cold) : t < T.rewind ? TL1 : t < T.pass2 ? rewindTl(t) : Math.min(TL2, t - T.pass2);
   scrimRight(expo(prog(t, T.turn1 - 0.2, 0.8)));
   const v = t < T.pass2 ? "v1" : "v2";
-  hudFull({ version: v, aspect: "16:9", durS: v === "v1" ? dur.v1 : dur.v2, tl: tlNow, paused: !(t >= T.rewind && t < T.freeze2) });
-  // the shorter take, proven
+  const playing = t < T.pause1 || (t >= T.rewind && t < T.freeze2);
+  // the burn-ins arrive once the camera is through the mark; the slug lights up as the narrator says "rough cut"
+  const hudIn = expo(prog(t, T.cold + ZOOM_LEN - 0.1, 0.5));
+  const hot = Math.sin(Math.PI * prog(t, T.voRough + voWord("rough", 2) - 0.05, 0.9));
+  hudFull({ version: v, aspect: "16:9", durS: v === "v1" ? dur.v1 : dur.v2, tl: tlNow, paused: !playing }, hudIn, hot);
+  // the shorter take, proven, on a burn-in plate clear of Reed
   if (t >= T.badge && t < T.copyLeave + 0.3) {
     const u = expo(prog(t, T.badge, 0.6)) * (1 - prog(t, T.copyLeave - 0.2, 0.4));
     if (u > 0) {
@@ -713,12 +812,14 @@ async function act1(t: number) {
       const hs = (v: number) => Math.round(v * 100);
       const f2 = (v: number) => `0:${(hs(v) / 100).toFixed(2).padStart(5, "0")}`;
       const a = `${f2(dur.v1)} → ${f2(dur.v2)}`, b = `  −${((hs(dur.v1) - hs(dur.v2)) / 100).toFixed(2)} s`;
-      x.shadowColor = "rgba(0,0,0,0.55)";
-      x.shadowBlur = 16;
-      x.fillStyle = "rgba(255,255,255,0.92)";
-      x.fillText(a, 52, 148);
+      const wa = x.measureText(a).width, wb = x.measureText(b).width, by = 905;
+      rrect(52 - 18, by - 44 - 12, wa + wb + 36, 44 + 30, 10);
+      x.fillStyle = "rgba(8,8,9,0.62)";
+      x.fill();
+      x.fillStyle = "rgba(255,255,255,0.94)";
+      x.fillText(a, 52, by);
       x.fillStyle = LIME;
-      x.fillText(b, 52 + x.measureText(a).width, 148);
+      x.fillText(b, 52 + wa, by);
       spacing(0);
       x.restore();
     }
@@ -741,23 +842,37 @@ async function act1(t: number) {
     spacing(0);
     x.restore();
   }
-  // transcript
-  const y = 1000, size = 40;
+  // transcript: it lights up word by word as the cold open plays
+  const { y, size } = TR1;
   let anchorX = W / 2 - 300;
   if (t < T.pass2) {
+    const lineIn = expo(prog(t, T.cold + ZOOM_LEN - 0.1, 0.5));
     const foldU = expo(prog(t, T.fold1, 0.4));
     const boxes = layoutLine(lineV1, size, W / 2, { idx: SEL, u: foldU });
-    const selU = t < T.dragEnd ? 0.35 + 0.65 * expo(t / T.dragEnd) : 1;
-    drawLine(boxes, y, size, tlNow, { select: t < T.strike1 ? { idx: SEL, u: selU } : undefined, strike: { idx: SEL, u: prog(t, T.strike1, 0.2) }, fade: { idx: SEL, u: foldU } });
+    const cu = expo(prog(t, T.dragStart, T.dragEnd - T.dragStart));
+    // the selection grows with the drag and fades while the strike draws
+    const selA = 1 - prog(t, T.strike1 - 0.05, 0.18);
+    drawLine(boxes, y, size, tlNow, { alpha: lineIn, select: t >= T.dragStart && selA > 0 ? { idx: SEL, u: cu, a: selA } : undefined, strike: { idx: SEL, u: prog(t, T.strike1, 0.2) }, fade: { idx: SEL, u: foldU } });
     // the cursor's path is fixed in screen space from the pre-fold layout, so it never rides the fold
     const pre = layoutLine(lineV1, size, W / 2).filter((b) => SEL.has(b.w.i));
-    if (pre.length) {
+    if (pre.length && t >= T.poster) {
       const sx0 = pre[0].x, sx1 = pre[pre.length - 1].x + pre[pre.length - 1].width;
       anchorX = Math.max(60, sx0 - 10);
-      const cu = t < T.dragEnd ? lerp(0.35, 1, expo(t / T.dragEnd)) : 1;
       const drift = expo(prog(t, T.noteSend + 0.05, 0.4));
-      const cx = t < T.noteSend ? lerp(sx0, sx1, cu) : lerp(sx1, sx1 + 30, drift);
-      cursor(cx, t < T.noteSend ? y - 12 : lerp(y - 12, y + 18, drift), 1.5, t < T.rewind ? 1 : 1 - prog(t, T.rewind, 0.2));
+      let cx: number, cy: number;
+      if (t < T.dragStart) {
+        // in from the lower right onto the first word of the stammer
+        const k = expo(prog(t, T.poster, T.dragStart - T.poster - 0.05));
+        cx = lerp(W * 0.62, sx0, k);
+        cy = lerp(H + 40, y - 12, k);
+      } else if (t < T.noteSend) {
+        cx = lerp(sx0, sx1, cu);
+        cy = y - 12;
+      } else {
+        cx = lerp(sx1, sx1 + 30, drift);
+        cy = lerp(y - 12, y + 18, drift);
+      }
+      cursor(cx, cy, 1.5, (t < T.rewind ? 1 : 1 - prog(t, T.rewind, 0.2)) * expo(prog(t, T.poster, 0.2)));
       // the real composer (2× pixels) while typing
       if (t >= T.noteOpen && t < T.noteSend + 0.25) {
         const c = lerp((ev["select-up"] ?? 0) + 0.8, (ev["note1-send"] ?? 0) - 0.02, prog(t, T.noteOpen + 0.15, T.noteSend - T.noteOpen - 0.15));
@@ -770,15 +885,20 @@ async function act1(t: number) {
   // note 1 at feed size, then Claude's reply in its place
   if (t < T.rewind + 0.3) noteCard(anchorX, 930, 1, t, { note: story[0].note, reply: story[0].reply, openAt: T.noteSend, replyAt: T.resolved1, signed: false, working: [T.working1, T.resolved1], side: "right", maxW: 720, alpha: 1 - prog(t, T.rewind, 0.3) });
   drawLogCard(t, expo(prog(t, T.wait1 - 0.1, 0.5)) * (1 - 0.45 * Math.sin(Math.PI * prog(t, T.rewind - 0.1, T.pass2 - T.rewind + 0.2))));
-  // naming the agent
+  // naming the agent: phone-legible, and clear of the right edge whatever the font measures
   if (t >= T.pass2) {
-    line("", LOGCARD.x, 806, 74, t, T.claude, { align: "left", leave: T.copyLeave, runs: [{ text: "That was Claude.", color: "gradient" }] });
-    line("", LOGCARD.x, 866, 40, t, T.claude2, { align: "left", weight: 500, leave: T.copyLeave, runs: [{ text: "cutroom is a video editor", color: SOFT }] });
-    line("", LOGCARD.x, 914, 40, t, T.claude2 + 0.12, { align: "left", weight: 500, leave: T.copyLeave, runs: [{ text: "Claude drives over MCP.", color: SOFT }] });
+    const l2 = "cutroom: the video editor", l3 = "Claude drives over MCP.";
+    x.font = "500 54px SF";
+    const lx = Math.min(LOGCARD.x, W - 64 - Math.max(x.measureText(l2).width, x.measureText(l3).width));
+    line("", lx, 798, 74, t, T.claude, { align: "left", leave: T.copyLeave, runs: [{ text: "That was Claude.", color: "gradient" }] });
+    line("", lx, 862, 54, t, T.claude2, { align: "left", weight: 500, leave: T.copyLeave, runs: [{ text: l2, color: "#e6e2dc" }] });
+    line("", lx, 922, 54, t, T.claude3, { align: "left", weight: 500, leave: T.copyLeave, runs: [{ text: l3, color: "#e6e2dc" }] });
   }
 }
 
 // ---------------------------------------------------------------- act 2: the box, Claude's second turn, the fold into a vertical Short
+// where the cursor rests while Claude works: clear of the transcript line
+const CURSOR_PARK = { x: 1210, y: 880 };
 async function act2(t: number) {
   const tl = TL2;
   const glideU = inOut(prog(t, T.glide, T.glideEnd - T.glide));
@@ -806,7 +926,7 @@ async function act2(t: number) {
     rrect(dest.x, dest.y, dest.width, dest.height, 4);
     x.clip();
     if (t >= T.pass3) x.drawImage(await img(inner.v3(Math.min(TL3, tl + (t - T.pass3)))), dest.x, dest.y, dest.width, dest.height);
-    else await drawLiving(DEC.v3, TL2, since, dest, 0.2);
+    else await drawLiving(DEC.v3, TL2, since, dest, 0.2 * (1 - prog(t, T.pass3 - 0.4, 0.4) ** 2));
     x.restore();
     x.strokeStyle = "rgba(255,240,230,0.16)";
     x.lineWidth = 1;
@@ -831,7 +951,7 @@ async function act2(t: number) {
     rrect(b.x, b.y, b.width, b.height, 6 * (1 - ease));
     x.stroke();
     x.shadowColor = "transparent";
-    const ha = prog(t, T.boxUp - 0.05, 0.15) * (1 - ease);
+    const ha = prog(t, T.boxUp - 0.05, 0.15) * (1 - clamp(ease * 2));
     if (ha > 0) {
       const hs = 14;
       x.globalAlpha = breathe * ha;
@@ -846,11 +966,11 @@ async function act2(t: number) {
     x.restore();
   }
   // HUD: the 16:9 burn-ins fade as the picture leaves, the column's arrive with it
-  hudFull({ version: "v2", aspect: "16:9", durS: dur.v2, tl, paused: true }, 1 - Math.max(dark * 0.6, inOut(clamp(glideU * 2))));
+  hudFull({ version: "v2", aspect: "16:9", durS: dur.v2, tl, paused: true }, 1 - Math.max(dark, inOut(clamp(glideU * 2))));
   const colState: HudState = { version: t < T.resolved2 ? "v2" : "v3", aspect: t < T.resolved2 ? "16:9" : "9:16", durS: dur.v3, tl: t >= T.pass3 ? Math.min(TL3, tl + (t - T.pass3)) : tl, paused: t < T.pass3 };
   if (t >= T.glide) hudColumn(t, colState, colNow, inOut(clamp((glideU - 0.5) * 2)), T.resolved2);
   // transcript: the 16:9 line goes with the dark; the column's comes with the glide
-  drawLine(layoutLine(lineV2, 40, W / 2), 1000, 40, tl, { alpha: 1 - dark });
+  drawLine(layoutLine(lineV2, TR1.size, W / 2), TR1.y, TR1.size, tl, { alpha: 1 - dark });
   if (t >= T.glide) drawColumnTranscript(colState.tl, inOut(clamp((glideU - 0.4) / 0.6)), colNow.x + colNow.width / 2, colNow);
   // the real composer for note 2 while typing, then the note at feed size beside the box, then Claude's reply
   if (t >= T.note2Open && t < T.note2Send + 0.25) {
@@ -870,8 +990,8 @@ async function act2(t: number) {
   }
   if (t >= T.note2Send) {
     const park = expo(prog(t, T.note2Send, 0.8));
-    cx = lerp(BOX.x + BOX.width, 1210, park);
-    cy = lerp(BOX.y + BOX.height - 4, 980, park);
+    cx = lerp(BOX.x + BOX.width, CURSOR_PARK.x, park);
+    cy = lerp(BOX.y + BOX.height - 4, CURSOR_PARK.y, park);
   }
   cursor(cx, cy, 1.5, curIn * (t >= T.glide ? 1 - prog(t, T.glide, 0.4) : 1));
   drawLogCard(t, 1);
@@ -949,7 +1069,7 @@ async function act3(t: number) {
   drawLogCard(t, 1 - 0.65 * palU, { dim: 1 - 0.5 * hush });
   if (paletteOpen && rects.palette) {
     const c = lerp((ev["palette"] ?? 0) + 0.45, (ev["ask-send"] ?? 0) - 0.02, prog(t, T.palette + 0.1, T.askSend - T.palette - 0.1));
-    const r = { ...rects.palette, width: Math.min(PAL_CROP_W, rects.palette.width) };
+    const r = rects.palette;
     const out = prog(t, T.askSend, 0.25);
     const sc = PAL_SCALE * (1 - out * 0.3);
     await capCrop(c, r, COLCX - (r.width * sc) / 2, PAL_Y, sc, (1 - out) * expo(prog(t, T.palette, 0.25)), 1);
@@ -959,11 +1079,11 @@ async function act3(t: number) {
     const press = prog(t, T.cmdK, 0.04) * (1 - prog(t, T.cmdK + 0.12, 0.08));
     keycaps(["⌘", "K"], COLCX, PAL_Y + rects.palette.height * PAL_SCALE + 44, 120, a, press);
   }
-  // the cursor comes up for ⌘K, then leaves out of the bottom edge for good
+  // the cursor comes up from below the bottom edge for ⌘K, then leaves the same way for good
   if (t < T.cursorOut + 0.6) {
     const up = expo(prog(t, T.cursorUp, 0.5));
     const outU = inOut(prog(t, T.cursorOut, 0.5));
-    cursor(lerp(1210, COLCX + 140, up), lerp(980, COL.y + 150, up) + outU * 1000, 1.5);
+    cursor(lerp(CURSOR_PARK.x, COLCX + 140, up), lerp(H + 120, COL.y + 150, up) + outU * 1000, 1.5, expo(prog(t, T.cursorUp, 0.12)));
   }
 }
 /** Two physical-looking keycaps, pressed once. */
@@ -1010,23 +1130,32 @@ function captionLift(t: number, tl: number) {
     const bx = (1 - u) * (1 - u) * p0.x + 2 * (1 - u) * u * p1.x + u * u * p2.x;
     const by = (1 - u) * (1 - u) * p0.y + 2 * (1 - u) * u * p1.y + u * u * p2.y;
     const fs = lerp(size, cw.fontSize * sx, u);
-    x.save();
-    if (renderCapWord && u > 0.5) {
+    // the transcript word becomes the caption word mid-flight: a short crossfade on one baseline
+    const kx = renderCapWord ? inOut(clamp((u - 0.4) / 0.25)) : 0;
+    if (kx < 1) {
+      x.save();
+      x.globalAlpha = 1 - kx;
+      mono(fs);
+      x.fillStyle = src.w.start <= tl ? BONE : GREY;
+      x.fillText(src.w.text, bx, by);
+      x.restore();
+    }
+    if (kx > 0 && renderCapWord) {
+      x.save();
+      x.globalAlpha = kx;
       const k2 = fs / (cw.fontSize * sx);
       x.translate(bx, by - cw.h * sx * k2);
       x.scale(sx * k2, sx * k2);
       renderCapWord(x, { ...cw, x: 0, y: 0 });
-    } else {
-      mono(fs);
-      x.fillStyle = src.w.start <= tl ? BONE : GREY;
-      x.fillText(src.w.text, bx, by);
+      x.restore();
     }
-    x.restore();
   });
 }
 
 // ---------------------------------------------------------------- act 4: the final pass, untouched
 const PUSH4 = 0.02;
+// the column slug bows out over the last hold of the final pass and the first beat of the pull-back
+const slugA = (t: number) => 1 - inOut(prog(t, T.reveal - 0.12, 0.36));
 function finalDest(t: number): Box {
   const slide = inOut(prog(t, T.snap, T.final - T.snap + 0.25));
   const base = lerpBox(COL, COLF, slide);
@@ -1052,7 +1181,7 @@ async function act4(t: number) {
   x.lineWidth = 1;
   x.strokeRect(dest.x + 0.5, dest.y + 0.5, dest.width - 1, dest.height - 1);
   const fade = 1 - inOut(prog(t, T.snap, 0.45));
-  hudColumn(t, { version: "v4", aspect: "9:16", durS: dur.v4, tl: 0, paused: false, final: true }, dest, 1);
+  hudColumn(t, { version: "v4", aspect: "9:16", durS: dur.v4, tl: 0, paused: false, final: true }, dest, slugA(t));
   if (fade > 0) {
     drawLogCard(t, fade);
     noteCard(COL.x - 32, COL.y + COL.height * 0.6, 3, t, { note: story[2].note, reply: story[2].reply, openAt: -1, replyAt: -1, signed: true, side: "left", vAlign: "middle", maxW: COL.x - 140, alpha: fade });
@@ -1153,8 +1282,8 @@ async function act5(t: number) {
         x.restore();
       }
     }
-    // Claude's log steps back as the real notes panel comes into frame
-    drawLogCard(t, (1 - inOut(prog(t, T.reveal + 0.3, 0.55))) * expo(prog(t, T.reveal, 0.25)));
+    // the final pass's slug rides the preview out with the zoom instead of cutting
+    if (t < T.reveal + 0.3) hudColumn(t, { version: "v4", aspect: "9:16", durS: dur.v4, tl: 0, paused: false, final: true }, pr, slugA(t));
     // each note's pin rises from where it was made in the real editor and lands on its resolved tick:
     // #1 the struck words in the transcript, #2 the picture (beside the face), #3 the ⌘K field
     const origins: Box[] = [rects.words ?? { x: 120, y: 360, width: 0, height: 0 }, { x: F916.x + F916.width * 0.82, y: F916.y + F916.height * 0.3, width: 0, height: 0 }, SEARCH_K];
@@ -1184,7 +1313,7 @@ async function act5(t: number) {
         for (let k = 0; k < 8; k++) {
           const qa = at3(lerp(u0, pu, k / 8)), qb = at3(lerp(u0, pu, (k + 1) / 8));
           x.strokeStyle = `rgba(232,244,124,${(0.5 * a * ((k + 1) / 8)).toFixed(3)})`;
-          x.lineWidth = 3 + 9 * ((k + 1) / 8);
+          x.lineWidth = 6 + 18 * ((k + 1) / 8);
           x.beginPath();
           x.moveTo(qa.x, qa.y);
           x.lineTo(qb.x, qb.y);
@@ -1192,10 +1321,10 @@ async function act5(t: number) {
         }
         x.restore();
         const q = at3(pu);
-        pin(q.x, q.y, n, t, { resolvedAt: 0, alpha: a, scale: lerp(0.6, 1, expo(prog(t, at - 0.15, 0.3))) });
+        pin(q.x, q.y, n, t, { resolvedAt: 0, alpha: a, scale: lerp(0.6, 2, expo(prog(t, at - 0.15, 0.3))) });
       } else {
         const q = expo(prog(t, land, 0.25));
-        if (q < 1) pin(tg.x, tg.y, n, t, { resolvedAt: 0, alpha: 1 - q, scale: lerp(1, tickR / 17, q) });
+        if (q < 1) pin(tg.x, tg.y, n, t, { resolvedAt: 0, alpha: 1 - q, scale: lerp(2, tickR / 17, q) });
         const p = prog(t, land, 0.6);
         x.strokeStyle = `rgba(232,244,124,${0.9 * (1 - p)})`;
         x.lineWidth = 2;
@@ -1204,8 +1333,8 @@ async function act5(t: number) {
         x.stroke();
       }
     }
-    line("", W / 2, 990, 46, t, T.reveal + 1.7, { leave: T.review - 0.35, runs: [{ text: "Three notes. Claude made every change.", color: "gradient" }] });
-    line("", W / 2, 1042, 32, t, T.reveal + 2.1, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Over MCP, while you watched.", color: GREY }] });
+    line("", W / 2, 984, 52, t, T.voThree - 0.05, { leave: T.review - 0.35, runs: [{ text: "Three notes. Claude made every change.", color: "gradient" }] });
+    line("", W / 2, 1044, 40, t, T.voThree + 0.6, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Over MCP, while you watched.", color: SOFT }] });
   } else if (t < T.end) {
     // review it like a pull request: the real Before/After, pushed in on what changed
     const u = inOut(prog(t, T.review, 0.8));
@@ -1216,7 +1345,6 @@ async function act5(t: number) {
     const bc = ev["before-click"] ?? 0;
     const aT = afterShown ?? bc + 2;
     const bIn = inOut(prog(c, bc + 0.05, 0.35)), bOut = inOut(prog(c, aT, 0.35));
-    const on = bIn * (1 - bOut);
     const pr = camRect(cam, F916);
     if (bIn > 0 && bOut < 1) {
       x.save();
@@ -1248,71 +1376,233 @@ async function act5(t: number) {
       x.drawImage(f, rects.review.x * k, rects.review.y * k, rects.review.width * k, rects.review.height * k, rr.x, rr.y, rr.width, rr.height);
       x.restore();
     }
-    // point at what was cut, while Before shows it
-    if (on > 0 && rects.words) {
-      const wr = camRect(cam, rects.words);
-      x.save();
-      x.globalAlpha = on * fadeOut;
-      x.strokeStyle = CORAL;
-      x.lineWidth = 2.5;
-      x.shadowColor = "rgba(255,95,79,0.6)";
-      x.shadowBlur = 14;
-      rrect(wr.x - 8, wr.y - 8, wr.width + 16, wr.height + 16, 8);
-      x.stroke();
-      x.restore();
-    }
-    // labels a phone can read
-    const labelA = u * fadeOut;
-    if (labelA > 0) {
-      const lx = pr.x + pr.width + 48, ly = pr.y + pr.height / 2;
-      const chipFor = (title: string, sub: string, color: string, a: number) => {
-        if (a <= 0.01) return;
-        x.save();
-        x.globalAlpha = a * labelA;
+    // labels a phone can read: nothing until Before is clicked, then BEFORE, then AFTER once After is back.
+    // One plate (sized for the wider label) on one side (picked from the settled camera), so the titles
+    // swap in place: the old one is out before the new one comes in.
+    const plateA = bIn * fadeOut;
+    if (plateA > 0.01) {
+      const chips = [
+        { title: "BEFORE", sub: `${fmtDur(dur.v1)} · 16:9`, color: CORAL, a: clamp(1 - 2 * bOut) },
+        { title: "AFTER", sub: `${fmtDur(dur.v4)} · 9:16 · captions`, color: LIME, a: clamp(2 * bOut - 1) },
+      ];
+      let w = 0;
+      for (const c2 of chips) {
         x.font = "700 56px SF";
         spacing(6);
-        const tw = x.measureText(title).width;
+        w = Math.max(w, x.measureText(c2.title).width);
         mono(28);
         spacing(0);
-        const sw = x.measureText(sub).width;
-        const w = Math.max(tw, sw) + 56, h = 150;
-        // beside the preview, on whichever side has room
-        const left = lx + w <= W - 40 ? lx : pr.x - 48 - w;
-        x.translate(left - lx, 0);
-        rrect(lx, ly - h / 2, w, h, 14);
-        x.fillStyle = "rgba(10,10,11,0.78)";
-        x.fill();
+        w = Math.max(w, x.measureText(c2.sub).width);
+      }
+      w += 56;
+      const h = 150, prF = camRect(camReview, F916);
+      const onRight = prF.x + prF.width + 48 + w <= W - 40;
+      const lx = onRight ? pr.x + pr.width + 48 : pr.x - 48 - w, ly = pr.y + pr.height / 2;
+      x.save();
+      x.globalAlpha = plateA;
+      rrect(lx, ly - h / 2, w, h, 14);
+      x.fillStyle = "rgba(10,10,11,0.78)";
+      x.fill();
+      for (const c2 of chips) {
+        if (c2.a <= 0.01) continue;
+        x.globalAlpha = plateA * c2.a;
         x.font = "700 56px SF";
         spacing(6);
-        x.fillStyle = color;
-        x.fillText(title, lx + 28, ly + 2);
+        x.fillStyle = c2.color;
+        x.fillText(c2.title, lx + 28, ly + 2);
         spacing(0);
         mono(28);
         x.fillStyle = GREY;
-        x.fillText(sub, lx + 28, ly + 50);
-        x.restore();
-      };
-      chipFor("BEFORE", `${fmtDur(dur.v1)} · 16:9`, CORAL, on);
-      chipFor("AFTER", `${fmtDur(dur.v4)} · 9:16 · captions`, LIME, 1 - on);
+        x.fillText(c2.sub, lx + 28, ly + 50);
+      }
+      x.restore();
     }
-    const g = x.createLinearGradient(0, H - 230, 0, H);
+    const g = x.createLinearGradient(0, H - 250, 0, H);
     g.addColorStop(0, "rgba(6,6,7,0)");
-    g.addColorStop(1, "rgba(6,6,7,0.9)");
+    g.addColorStop(1, `rgba(6,6,7,${(0.95 * fadeOut).toFixed(3)})`);
     x.fillStyle = g;
-    x.fillRect(0, H - 230, W, 230);
-    line("", W / 2, 1030, 48, t, T.review + 1.4, { leave: T.end - 0.5, runs: [{ text: "Review it like a pull request.", color: "gradient" }] });
+    x.fillRect(0, H - 250, W, 250);
+    line("", W / 2, 1046, 46, t, T.voReview - 0.05, { leave: T.end - 0.5, runs: [{ text: "Review it like a pull request.", color: "gradient" }] });
   }
 }
 
+// ---------------------------------------------------------------- the mark: a note pin with a cut taken out of it
+// Geometry from assets/brand/mark.svg (a 512 box): the pin's head is a circle at (256, 232), r 150,
+// with its point at (256, 452); the counter is r 66; the cut is the wedge between -45° and 0°;
+// the lime edge runs along the -45° side from r 68 to r 151.
+const MARK = { cx: 256, cy: 232, r: 150, tipY: 452, counter: 66, limeIn: 68, limeOut: 151 };
+function pinPath(p: Path2D | SKRSContext2D) {
+  const a0 = Math.asin((334.3 - MARK.cy) / MARK.r); // where the point's sides leave the circle
+  p.moveTo(MARK.cx + MARK.r * Math.cos(Math.PI - a0), MARK.cy + MARK.r * Math.sin(Math.PI - a0));
+  p.arc(MARK.cx, MARK.cy, MARK.r, Math.PI - a0, a0, false);
+  p.lineTo(MARK.cx, MARK.tipY);
+  p.closePath();
+}
+/**
+ * The cutroom mark at (px, py) (the counter's centre), `k` screen px per mark unit. `cut` opens the
+ * counter and throws the wedge out (0 = a whole pin, 1 = the mark); `blade` draws the lime cut in
+ * from outside (0 to 1); `portal` fills the counter with whatever `fill` draws (the take, on the entry).
+ */
+function drawMark(px: number, py: number, k: number, o: { cut: number; blade: number; alpha?: number; blur?: number; glow?: number; portal?: () => void }) {
+  const a = o.alpha ?? 1;
+  if (a <= 0.002) return;
+  const toMark = () => {
+    x.translate(px, py);
+    x.scale(k, k);
+    x.translate(-MARK.cx, -MARK.cy);
+  };
+  x.save();
+  x.globalAlpha = a;
+  if ((o.blur ?? 0) > 0.3) x.filter = `blur(${o.blur!.toFixed(1)}px)`;
+  // a soft coral bloom behind it
+  if ((o.glow ?? 0) > 0) {
+    const g = x.createRadialGradient(px, py + 30 * k, 0, px, py + 30 * k, 420 * k);
+    g.addColorStop(0, `rgba(255,95,79,${(0.22 * o.glow!).toFixed(3)})`);
+    g.addColorStop(1, "rgba(255,95,79,0)");
+    x.fillStyle = g;
+    x.fillRect(px - 460 * k, py - 430 * k, 920 * k, 920 * k);
+  }
+  const rc = MARK.counter * expo(clamp(o.cut / 0.6));
+  const far = MARK.r * 3;
+  const dir = (deg: number, r: number) => ({ x: MARK.cx + r * Math.cos((deg * Math.PI) / 180), y: MARK.cy + r * Math.sin((deg * Math.PI) / 180) });
+  const grad = () => {
+    const g = x.createLinearGradient(0, MARK.cy - MARK.r, 0, MARK.tipY);
+    g.addColorStop(0, "#ff7a6e");
+    g.addColorStop(1, "#ff4f4f");
+    return g;
+  };
+  // the counter, open onto whatever is behind it
+  if (o.portal && rc > 0.5) {
+    x.save();
+    toMark();
+    x.beginPath();
+    x.arc(MARK.cx, MARK.cy, rc, 0, Math.PI * 2);
+    x.restore();
+    x.save();
+    x.clip();
+    o.portal();
+    x.restore();
+  }
+  // the body: the pin minus the counter and the wedge (one path: everything but the counter-plus-wedge)
+  x.save();
+  toMark();
+  const hole = new Path2D();
+  hole.rect(MARK.cx - 2000, MARK.cy - 2000, 4000, 4000);
+  if (rc > 0.5) {
+    const c0 = dir(0, rc), w1 = dir(-45, far), w0 = dir(0, far);
+    hole.moveTo(c0.x, c0.y);
+    hole.arc(MARK.cx, MARK.cy, rc, 0, Math.PI * 1.75, false);
+    hole.lineTo(w1.x, w1.y);
+    hole.lineTo(w0.x, w0.y);
+    hole.closePath();
+  }
+  x.clip(hole, "evenodd");
+  const body = new Path2D();
+  pinPath(body);
+  x.shadowColor = "rgba(0,0,0,0.45)";
+  x.shadowBlur = 30 * k;
+  x.shadowOffsetY = 10 * k;
+  x.fillStyle = grad();
+  x.fill(body);
+  x.restore();
+  // the wedge: cut loose, it slides out along its bisector and goes
+  const wu = clamp(o.cut);
+  if (wu > 0 && wu < 1) {
+    x.save();
+    toMark();
+    // it flies off bright and only fades over the second half, so it never reads as a dark shard
+    const off = 130 * expo(wu);
+    x.translate(off * Math.cos((-22.5 * Math.PI) / 180), off * Math.sin((-22.5 * Math.PI) / 180));
+    x.globalAlpha = a * (1 - clamp((wu - 0.45) / 0.55));
+    const w1 = dir(-45, far), w0 = dir(0, far);
+    x.beginPath();
+    x.moveTo(MARK.cx, MARK.cy);
+    x.lineTo(w1.x, w1.y);
+    x.lineTo(w0.x, w0.y);
+    x.closePath();
+    x.clip();
+    const notCounter = new Path2D();
+    notCounter.rect(MARK.cx - 2000, MARK.cy - 2000, 4000, 4000);
+    notCounter.arc(MARK.cx, MARK.cy, Math.max(rc, 0.1), 0, Math.PI * 2);
+    x.clip(notCounter, "evenodd");
+    const body = new Path2D();
+    pinPath(body);
+    x.fillStyle = grad();
+    x.fill(body);
+    x.restore();
+  }
+  // the blade: a lime line streaks in from outside and stays as the cut's edge
+  if (o.blade > 0) {
+    const head = lerp(430, MARK.limeIn, expo(clamp(o.blade / 0.55)));
+    const tail = lerp(430, MARK.limeOut, expo(clamp(o.blade)));
+    const flash = 1 - clamp((o.blade - 0.4) / 0.6);
+    x.save();
+    toMark();
+    const h = dir(-45, head), tl = dir(-45, Math.max(tail, head));
+    x.lineCap = "round";
+    x.strokeStyle = LIME;
+    x.lineWidth = 7 + 6 * flash;
+    x.shadowColor = `rgba(232,244,124,${(0.9 * flash).toFixed(3)})`;
+    x.shadowBlur = 28 * flash * k + 1;
+    x.beginPath();
+    x.moveTo(tl.x, tl.y);
+    x.lineTo(h.x, h.y);
+    x.stroke();
+    x.restore();
+  }
+  x.restore();
+}
+
+// ---------------------------------------------------------------- act 0: the entry
+const MARK_K = 360 / 512; // the mark at 360 px across its box
+const MARK_AT = { x: W / 2, y: H / 2 - 35 * MARK_K }; // the counter, so the whole pin sits centred
+async function act0(t: number) {
+  stage(0);
+  const inU = expo(prog(t, T.pinIn, 0.55));
+  const cut = prog(t, T.cutMark, 0.42);
+  const blade = prog(t, T.cutMark - 0.04, 0.32);
+  // the flight: the counter grows from the middle of the frame until the take fills it
+  const zu = prog(t, T.zoom, ZOOM_LEN);
+  const z = Math.exp(Math.log(34) * zu ** 2.6);
+  const py = lerp(MARK_AT.y, H / 2, inOut(zu));
+  const breathe = 1 + 0.03 * prog(t, T.cutMark, T.zoom - T.cutMark);
+  const tl = Math.max(0, t - T.cold);
+  const frame = t >= T.zoom ? await img(inner.v1(tl)) : null;
+  drawMark(MARK_AT.x, py, MARK_K * breathe * z * lerp(0.9, 1, inU), {
+    cut,
+    blade,
+    alpha: inU,
+    blur: (1 - inU) * 12,
+    glow: inU * (1 - zu),
+    portal: frame ? () => x.drawImage(frame, 0, 0, W, H) : undefined,
+  });
+}
+
 // ---------------------------------------------------------------- act 6: the end, waiting for your note
-const PULSE0 = 3.2; // first peak of the waiting dot, seconds into the end card
-function act6(t: number) {
-  stage(1.6);
+const PULSE0 = T.waitIn - T.end + 0.6; // first peak of the waiting dot, seconds into the end card
+const WAIT_Y = H / 2 + 160;
+/** Where the waiting dot sits on the card (it carries into the exit). */
+function waitLayout() {
+  const a = "→ wait_for_feedback  ", b = "  waiting for your note";
+  const dotW = 30;
+  mono(44, 500);
+  const wa = x.measureText(a).width, wb = x.measureText(b).width;
+  mono(34, 500);
+  const wc = x.measureText("  0:00").width;
+  const left = W / 2 - (wa + dotW + wb + wc) / 2;
+  return { a, b, wa, wb, dotW, left, dotX: left + wa + dotW / 2, dotY: WAIT_Y - 14 };
+}
+const pulseAt = (lt: number) => 0.5 + 0.5 * Math.sin(((lt - PULSE0) / 1.2) * Math.PI * 2 + Math.PI / 2);
+function act6(t: number, leave = 0) {
+  // the review's last frame is stage(1.2); the card eases up to its own level
   const lt = t - T.end;
+  stage(lerp(1.2, 1.6, inOut(prog(lt, 0, 1.0))));
+  const keep = 1 - leave;
+  const stagger = (k: number) => 1 - inOut(clamp(leave * 1.6 - k * 0.12));
   const iu = expo(prog(lt, 0.25, 1.1));
   const size = 180;
   x.save();
-  x.globalAlpha = iu;
+  x.globalAlpha = iu * stagger(4);
   const g = x.createRadialGradient(W / 2, H / 2 - 230, 0, W / 2, H / 2 - 230, 420);
   g.addColorStop(0, `rgba(255,95,79,${0.2 * iu})`);
   g.addColorStop(1, "rgba(255,95,79,0)");
@@ -1320,81 +1610,145 @@ function act6(t: number) {
   x.fillRect(0, 0, W, H);
   x.translate(W / 2, H / 2 - 230);
   x.scale(lerp(0.9, 1, iu), lerp(0.9, 1, iu));
-  if (1 - iu > 0.02) x.filter = `blur(${((1 - iu) * 14).toFixed(1)}px)`;
+  const blurOut = (1 - stagger(4)) * 14;
+  if (1 - iu > 0.02 || blurOut > 0.3) x.filter = `blur(${((1 - iu) * 14 + blurOut).toFixed(1)}px)`;
   x.drawImage(icon, -size / 2, -size / 2, size, size);
   x.restore();
-  line("", W / 2, H / 2 - 30, 104, lt, 0.7, { weight: 700, runs: [{ text: "cutroom", color: "gradient" }] });
-  line("", W / 2, H / 2 + 34, 40, lt, 1.05, { weight: 500, runs: [{ text: "Point at it. Claude fixes it.", color: GREY }] });
+  const fade = (k: number) => ({ alpha: stagger(k) });
+  line("", W / 2, H / 2 - 30, 104, lt, 0.7, { weight: 700, runs: [{ text: "cutroom", color: "gradient" }], ...fade(3) });
+  line("", W / 2, H / 2 + 46, 56, lt, T.tagIn - T.end, { weight: 500, runs: [{ text: "Point at it. Claude fixes it.", color: SOFT }], ...fade(2) });
   // the film ends inside a live MCP call, waiting for your note
-  const wu = expo(prog(lt, 1.6, 0.7));
+  const L = waitLayout();
+  const wu = expo(prog(lt, T.waitIn - T.end, 0.7));
   if (wu > 0) {
     x.save();
-    x.globalAlpha = wu;
-    const a = "→ wait_for_feedback  ", b = "  waiting for your note";
-    const secs = Math.max(0, Math.floor(lt - 1.6));
+    const textA = wu * stagger(1);
+    const secs = Math.max(0, Math.floor(lt - (T.waitIn - T.end)));
     const c = `  0:${String(secs).padStart(2, "0")}`;
-    const dotW = 30;
-    mono(44, 500);
-    const wa = x.measureText(a).width, wb = x.measureText(b).width;
-    mono(34, 500);
-    const wc = x.measureText(c).width;
-    let px = W / 2 - (wa + dotW + wb + wc) / 2;
-    const py = H / 2 + 160;
+    let px = L.left;
+    x.globalAlpha = textA;
     mono(44, 500);
     x.fillStyle = BONE;
-    x.fillText(a, px, py);
-    px += wa;
-    const pulse = 0.5 + 0.5 * Math.sin(((lt - PULSE0) / 1.2) * Math.PI * 2 + Math.PI / 2);
-    x.fillStyle = CORAL;
-    x.globalAlpha = wu * (0.45 + 0.55 * pulse);
-    x.beginPath();
-    x.arc(px + dotW / 2, py - 14, 10 * (1 + 0.35 * pulse), 0, Math.PI * 2);
-    x.fill();
-    x.globalAlpha = wu;
-    px += dotW;
+    x.fillText(L.a, px, WAIT_Y);
+    px += L.wa + L.dotW;
     x.fillStyle = SOFT;
-    x.fillText(b, px, py);
-    px += wb;
+    x.fillText(L.b, px, WAIT_Y);
+    px += L.wb;
     mono(34, 500);
     x.fillStyle = "#77736d";
-    x.fillText(c, px, py);
+    x.fillText(c, px, WAIT_Y);
+    // the dot stays for the exit, which takes it from here
+    if (leave <= 0) {
+      const pulse = pulseAt(lt);
+      x.fillStyle = CORAL;
+      x.globalAlpha = wu * (0.45 + 0.55 * pulse);
+      x.beginPath();
+      x.arc(L.dotX, L.dotY, 10 * (1 + 0.35 * pulse), 0, Math.PI * 2);
+      x.fill();
+    }
     x.restore();
   }
-  const pu = expo(prog(lt, 2.3, 0.8));
+  const pu = expo(prog(lt, T.pillIn - T.end, 0.8));
   if (pu > 0) {
     x.save();
-    x.globalAlpha = pu;
-    mono(30);
+    x.globalAlpha = pu * stagger(0.5);
+    mono(38);
     const cmd = "claude mcp add cutroom -- npx -y cutroom mcp";
-    const cw = x.measureText(cmd).width + 64;
+    const cw = x.measureText(cmd).width + 76;
     const py = H / 2 + 230 + (1 - pu) * 12;
-    rrect(W / 2 - cw / 2, py, cw, 64, 32);
+    rrect(W / 2 - cw / 2, py, cw, 78, 39);
     x.fillStyle = "rgba(255,255,255,0.06)";
     x.fill();
     x.strokeStyle = "rgba(255,255,255,0.14)";
     x.lineWidth = 1.5;
     x.stroke();
     x.fillStyle = "#e9e6e1";
-    x.fillText(cmd, W / 2 - cw / 2 + 32, py + 42);
+    x.fillText(cmd, W / 2 - cw / 2 + 38, py + 52);
     x.restore();
   }
-  line("", W / 2, H - 56, 24, lt, 3.0, { weight: 500, runs: [{ text: "Open source  ·  MIT  ·  runs locally  ·  github.com/0xpratzyy/cutroom", color: "#6a665f" }] });
+  line("", W / 2, H - 70, 36, lt, T.footIn - T.end, { weight: 500, runs: [{ text: "Open-source video editor for Claude Code  ·  MIT  ·  runs locally  ·  ", color: "#a8a49e" }, { text: "github.com/0xpratzyy/cutroom", color: BONE }], ...fade(0) });
+  return keep;
+}
+
+// ---------------------------------------------------------------- act 7: the exit
+// The card dissolves around its waiting dot; the dot comes to the middle, swells into a pin and is cut
+// back into the mark (the entry, answered); the repo sits under it on the last frame.
+async function act7(t: number) {
+  const et = t - T.exit;
+  const leave = prog(et, 0, 0.9);
+  act6(t, leave);
+  const L = waitLayout();
+  const lt = t - T.end;
+  const go = inOut(prog(et, 0.15, 0.75));
+  const grow = inOut(prog(et, 0.75, 0.45));
+  const cut = prog(et, 1.2, 0.42);
+  const blade = prog(et, 1.16, 0.32);
+  const px = lerp(L.dotX, MARK_AT.x, go), py = lerp(L.dotY, MARK_AT.y, go);
+  const k = MARK_K * 0.78;
+  if (grow < 1) {
+    // the dot, still pulsing, on its way to the middle
+    const pulse = pulseAt(lt) * (1 - go);
+    x.save();
+    x.globalAlpha = (0.45 + 0.55 * Math.max(pulse, go)) * (1 - grow);
+    x.fillStyle = CORAL;
+    x.beginPath();
+    x.arc(px, py, lerp(10 * (1 + 0.35 * pulse), MARK.r * k, grow), 0, Math.PI * 2);
+    x.fill();
+    x.restore();
+  }
+  if (grow > 0) drawMark(px, py, k * lerp(0.35, 1, grow), { cut, blade, alpha: grow, glow: grow });
+  line("", W / 2, MARK_AT.y + (MARK.tipY - MARK.cy) * k + 120, 44, et, 1.55, { weight: 500, runs: [{ text: "github.com/0xpratzyy/cutroom", color: BONE }] });
 }
 
 async function render(t: number) {
   x.globalAlpha = 1;
   x.filter = "none";
-  if (t < T.box) await act1(t);
+  if (t < T.cold + ZOOM_LEN) await act0(t);
+  else if (t < T.box) await act1(t);
   else if (t < T.cursorUp) await act2(t);
   else if (t < T.snap) await act3(t);
   else if (t < T.reveal) await act4(t);
   else if (t < T.end) await act5(t);
-  else act6(t);
+  else if (t < T.exit) act6(t);
+  else await act7(t);
   finish(t);
 }
 
-// ---------------------------------------------------------------- cues for music-rough.mts
+// ---------------------------------------------------------------- cues for the score (music-rough.mts), the beat (beat.mts) and the mix (mix.mts)
 const filmOfCap = (c: number | undefined, fallback: number) => (c === undefined ? fallback : T.review + (c - REVIEW_C0));
+/** Keystrokes in a text field, on the capture clock: the frames where its text gains ink (a caret
+ *  blinking back on never beats the most ink seen so far, so it doesn't count). */
+async function keystrokes(r: Box | undefined, c0: number, c1: number) {
+  if (!r) return [] as number[];
+  const pw = 160, ph = 24, pc = createCanvas(pw, ph), p = pc.getContext("2d");
+  const out: number[] = [];
+  let most = -1;
+  for (let i = 0; i < cap.frames.length; i++) {
+    const c = capTimes[i];
+    if (c < c0 - 0.3) continue;
+    if (c > c1 + 0.05) break;
+    const f = await loadImage(join(OUT, "capture", cap.frames[i].file));
+    const k = f.width / 1440;
+    p.drawImage(f, r.x * k, r.y * k, r.width * k, r.height * k, 0, 0, pw, ph);
+    const d = p.getImageData(0, 0, pw, ph).data;
+    let ink = 0;
+    for (let j = 0; j < d.length; j += 4) if (d[j] + d[j + 1] + d[j + 2] > 3 * 150) ink++;
+    if (most >= 0 && ink > most + 6 && c >= c0) out.push(c);
+    most = Math.max(most, ink);
+  }
+  return out.filter((c, i) => i === 0 || c - out[i - 1] > 0.035);
+}
+/** Capture keystrokes mapped onto the film the way the composer crop maps the capture. */
+const keysOnFilm = (keys: number[], c0: number, c1: number, f0: number, f1: number, fallback: number[]) =>
+  keys.length ? keys.map((c) => f0 + (clamp((c - c0) / (c1 - c0)) * (f1 - f0))) : fallback;
+const k1c = [(ev["select-up"] ?? 0) + 0.8, (ev["note1-send"] ?? 0) - 0.02];
+const k2c = [(ev["box-up"] ?? 0) + 0.45, (ev["note2-send"] ?? 0) - 0.02];
+const k3c = [(ev["palette"] ?? 0) + 0.45, (ev["ask-send"] ?? 0) - 0.02];
+const keys1 = keysOnFilm(await keystrokes(rects.composer1, k1c[0], k1c[1]), k1c[0], k1c[1], T.noteOpen + 0.15, T.noteSend, Array.from({ length: 6 }, (_, i) => T.noteOpen + 0.3 + i * 0.08));
+const keys2 = keysOnFilm(await keystrokes(rects.composer2, k2c[0], k2c[1]), k2c[0], k2c[1], T.note2Open + 0.15, T.note2Send, Array.from({ length: 8 }, (_, i) => T.note2Open + 0.15 + i * 0.09));
+const palRow = rects.palette ? { ...rects.palette, height: Math.min(56, rects.palette.height) } : undefined;
+const keys3 = keysOnFilm(await keystrokes(palRow, k3c[0], k3c[1]), k3c[0], k3c[1], T.palette + 0.1, T.askSend, Array.from({ length: 12 }, (_, i) => T.palette + 0.2 + i * 0.12));
+const bcFilm = filmOfCap(ev["before-click"], T.review + T.reviewPre), aShownFilm = filmOfCap(afterShown, bcFilm + 2.4);
 const cues = {
   duration: DUR,
   sections: { ...T },
@@ -1403,32 +1757,48 @@ const cues = {
     { at: T.pass2, name: "L1" },
     { at: T.wait2, name: "L2" },
     { at: T.final, name: "full" },
-    { at: filmOfCap(ev["before-click"], T.review + 0.4), name: "demo" },
-    { at: filmOfCap(afterShown, T.review + 2.4), name: "restore" },
+    { at: bcFilm + 0.08, name: "demo" },
+    { at: aShownFilm, name: "restore" },
   ],
   working: [[T.working1, T.resolved1], [T.working2, T.fold], [T.working3, T.still]],
   chimes: [{ at: T.resolved1, midi: 76 }, { at: T.resolved2, midi: 80 }, { at: T.resolved3, midi: 83 }, ...[0, 1, 2].map((k) => ({ at: T.reveal + PIN_GO + PIN_FLY + k * PIN_STAG, midi: [88, 92, 95][k] }))],
   silence: [T.still, T.bloom],
   arrival: T.bloom,
   tonicAt: iFixes >= 0 ? T.final + V4[iFixes].start - FINAL_IN : T.final + FINAL_LEN - 1,
-  endPulses: [0, 1, 2].map((k) => T.end + PULSE0 + k * 1.2),
+  endPulses: [0, 1, 2].map((k) => T.end + PULSE0 + k * 1.2).filter((p) => p < T.exit + 0.8),
   rewind: { from: T.rewind, to: T.pass2 },
+  // the narrator's lines, by id (vo-<take>.json has the files)
+  vo: ["launch", "rough", "notes", "claude", "what", "point", "ask", "three", "review", "name", "tagline", "turn"].map((id) => ({ id, at: T[`vo${id[0].toUpperCase()}${id.slice(1)}`] })),
+  // Reed's own sound, whenever the film inside the film plays at speed
+  sync: [
+    { src: "v1", from: 0, len: TL1, at: T.cold },
+    { src: "v2", from: 0, len: TL2, at: T.pass2 },
+    { src: "v3", from: TL2, len: TL3 - TL2, at: T.pass3 },
+    { src: "v4", from: FINAL_IN, len: FINAL_LEN, at: T.final },
+    { src: "v1", from: 0, len: Math.max(0.5, aShownFilm - bcFilm), at: bcFilm },
+  ],
   sfx: [
-    { name: "click", at: 0.0 },
+    { name: "pin", at: T.pinIn },
+    { name: "slice", at: T.cutMark },
+    { name: "whoosh", at: T.zoom, dur: ZOOM_LEN },
+    { name: "pause", at: T.pause1 },
+    { name: "click", at: T.dragStart },
     { name: "release", at: T.dragEnd },
-    ...Array.from({ length: 6 }, (_, i) => ({ name: "key", at: T.noteOpen + 0.2 + i * 0.1 })),
+    ...keys1.map((at) => ({ name: "key", at })),
     { name: "tock", at: T.noteSend },
     { name: "fold", at: T.fold1 },
     { name: "click", at: T.boxDown },
     { name: "release", at: T.boxUp },
-    ...Array.from({ length: 8 }, (_, i) => ({ name: "key", at: T.note2Open + 0.15 + i * 0.09 })),
+    ...keys2.map((at) => ({ name: "key", at })),
     { name: "tock", at: T.note2Send },
     { name: "breath", at: T.glide, dur: T.glideEnd - T.glide },
     { name: "key", at: T.cmdK, gain: 1.2 },
-    ...Array.from({ length: 12 }, (_, i) => ({ name: "key", at: T.palette + 0.2 + i * 0.12 })),
+    ...keys3.map((at) => ({ name: "key", at })),
     { name: "tock", at: T.askSend },
-    { name: "click", at: filmOfCap(ev["before-click"], T.review + 0.4) },
-    { name: "click", at: filmOfCap(ev["after-click"], T.review + 2.4) },
+    { name: "click", at: bcFilm + 0.06 },
+    { name: "click", at: filmOfCap(ev["after-click"], bcFilm + 2.4) + 0.06 },
+    { name: "pin", at: T.exit + 0.75 },
+    { name: "slice", at: T.exit + 1.2 },
   ],
 };
 writeFileSync(join(OUT, "cues.json"), JSON.stringify(cues, null, 1));

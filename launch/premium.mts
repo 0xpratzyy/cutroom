@@ -48,7 +48,7 @@ export function stage(glow = 1) {
  * A line of type that resolves out of a blur. `at` is when it starts; it can also leave
  * (blur out, drift up) from `leave`. Returns the line width.
  */
-export function line(text: string, cx: number, base: number, size: number, t: number, at: number, o: { weight?: number; color?: string; leave?: number; align?: "center" | "left"; dim?: boolean; runs?: { text: string; color: string }[] } = {}) {
+export function line(text: string, cx: number, base: number, size: number, t: number, at: number, o: { weight?: number; color?: string; leave?: number; align?: "center" | "left"; dim?: boolean; runs?: { text: string; color: string }[]; alpha?: number } = {}) {
   const u = expo(prog(t, at, 0.9));
   const out = o.leave !== undefined ? inOut(prog(t, o.leave, 0.45)) : 0;
   if (u <= 0 || out >= 1) return 0;
@@ -59,8 +59,15 @@ export function line(text: string, cx: number, base: number, size: number, t: nu
   const w = x.measureText(full).width;
   const left = o.align === "left" ? cx : cx - w / 2;
   x.save();
-  x.globalAlpha = u * (1 - out);
-  const blur = (1 - u) * 18 + out * 14;
+  // `alpha` lets a caller dissolve the line on its own clock (it blurs a little as it goes)
+  const k = clamp(o.alpha ?? 1);
+  if (k <= 0) {
+    x.restore();
+    track(0);
+    return 0;
+  }
+  x.globalAlpha = u * (1 - out) * k;
+  const blur = (1 - u) * 18 + out * 14 + (1 - k) * 10;
   if (blur > 0.3) x.filter = `blur(${blur.toFixed(1)}px)`;
   const dy = (1 - u) * 26 - out * 20;
   let px = left;
