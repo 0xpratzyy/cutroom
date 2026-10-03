@@ -98,20 +98,34 @@ const easeOutBounce = (t: number) => {
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}'-]+/gu, "");
 
-/**
- * Draw one caption page as it looks at time t (seconds, same clock as the page's words).
- * Used by the preview every frame and by the exporter at sampled times.
- */
-export function drawCaptionFrame(ctx: Ctx2D, width: number, height: number, page: CaptionPage, style: CaptionStyle, t: number): void {
+/** Where the words of a caption page sit before any animation. Measuring is its only use of ctx. */
+export interface CaptionLayout {
+  /** Font size in px. */
+  size: number;
+  /** CSS font shorthand the page is drawn with. */
+  font: string;
+  /** Words as drawn (uppercased if the style says so). */
+  words: string[];
+  /** Advance width of each word, unscaled. */
+  widths: number[];
+  space: number;
+  lines: { idx: number[]; width: number }[];
+  lineH: number;
+  blockH: number;
+  /** Middle of the first line, before the page's entrance offset. */
+  top: number;
+}
+
+/** Lay out a caption page: font size, greedy line wrapping and the block's vertical position. Leaves ctx.font set. */
+export function layoutCaptionPage(ctx: Ctx2D, width: number, height: number, page: CaptionPage, style: CaptionStyle): CaptionLayout {
   const size = Math.round(style.fontSize * height);
-  const dur = animationDuration(style);
-  const active = activeWordIndex(page, t);
-  ctx.font = `${style.fontWeight} ${size}px ${style.fontFamily}`;
+  const font = `${style.fontWeight} ${size}px ${style.fontFamily}`;
+  ctx.font = font;
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
   const words = page.words.map((w) => (style.uppercase ? w.text.toUpperCase() : w.text));
-  const emph = new Set(style.emphasisWords.map(norm));
-  const space = ctx.measureText(" ").width;
+  // Word gap: a space plus room for the outline, so stroked words never touch.
+  const space = ctx.measureText(" ").width + (style.strokeWidth ? style.strokeWidth * size * 0.5 : 0);
   const maxLine = width * 0.86;
 
   // Greedy line wrapping on unscaled widths, so animations never reflow the text.
@@ -130,6 +144,47 @@ export function drawCaptionFrame(ctx: Ctx2D, width: number, height: number, page
   });
   if (line.length) lines.push({ idx: line, width: lineW });
 
+  const lineH = size * 1.22;
+  const blockH = lineH * lines.length;
+  return { size, font, words, widths, space, lines, lineH, blockH, top: style.position * height - blockH / 2 + lineH / 2 };
+}
+
+/** One word of a caption page as drawn at some time t. */
+export interface CaptionWordFrame {
+  /** Index in page.words. */
+  i: number;
+  /** Text as drawn. */
+  text: string;
+  /** Advance width, unscaled. */
+  width: number;
+  /** Centre of the word's advance box on the line's middle: the point it is drawn and scaled around. */
+  cx: number;
+  cy: number;
+  scale: number;
+  /** Page alpha × word alpha. */
+  alpha: number;
+  /** The spoken word, highlighted (style.highlight on). */
+  isActive: boolean;
+  fill: string;
+}
+
+export interface CaptionFrame {
+  layout: CaptionLayout;
+  /** Page-level entrance alpha and vertical offset. */
+  alpha: number;
+  dy: number;
+  /** Visible words only ("reveal" hides the unspoken ones). */
+  words: CaptionWordFrame[];
+}
+
+/** Everything drawCaptionFrame() draws for a page at time t, without drawing it. */
+export function captionFrame(ctx: Ctx2D, width: number, height: number, page: CaptionPage, style: CaptionStyle, t: number): CaptionFrame {
+  const layout = layoutCaptionPage(ctx, width, height, page, style);
+  const { size, words, widths, space, lines, lineH } = layout;
+  const dur = animationDuration(style);
+  const active = activeWordIndex(page, t);
+  const emph = new Set(style.emphasisWords.map(norm));
+
   // Page-level entrance.
   const pageAge = dur ? clamp01((t - page.start) / dur) : 1;
   let alpha = 1;
@@ -141,12 +196,102 @@ export function drawCaptionFrame(ctx: Ctx2D, width: number, height: number, page
   }
   if (style.animation === "bounce") dy = (1 - easeOutBounce(pageAge)) * size * 1.2;
 
-  const lineH = size * 1.22;
-  const blockH = lineH * lines.length;
-  let y = style.position * height - blockH / 2 + lineH / 2 + dy;
+  const out: CaptionWordFrame[] = [];
+  let y = layout.top + dy;
+  for (const l of lines) {
+    // Scales first: a word that grows (pop, scale highlight) makes room on the line instead of
+    // overlapping its neighbours. Wrapping stays on unscaled widths, so nothing reflows.
+    const scales = l.idx.map((i) => {
+      const isActive = style.highlight && i === active;
+      const wordAge = dur ? clamp01((t - page.words[i].start) / dur) : 1;
+      let scale = 1;
+      if (style.animation === "reveal") scale = i <= active ? 0.7 + 0.3 * easeOutBack(wordAge) : 1;
+      else if (style.animation === "pop" && i === active) scale = 1 + 0.16 * (1 - easeOutCubic(wordAge)) + 0.04;
+      if (isActive && style.highlightStyle === "scale") scale *= 1.14;
+      return scale;
+    });
+    const grow = l.idx.reduce((sum, i, k) => sum + Math.max(0, scales[k] - 1) * widths[i], 0);
+    let x = (width - l.width - grow) / 2;
+    l.idx.forEach((i, k) => {
+      const ww = widths[i];
+      const spoken = i <= active;
+      const isActive = style.highlight && i === active;
+      const wordAge = dur ? clamp01((t - page.words[i].start) / dur) : 1;
+      const scale = scales[k];
+      const advance = ww * Math.max(1, scale);
+      let wAlpha = 1;
+      if (style.animation === "reveal") {
+        if (!spoken) {
+          x += ww + space;
+          return;
+        }
+        wAlpha = easeOutCubic(Math.min(1, wordAge * 2));
+      }
+
+      let fill = style.color;
+      if (emph.has(norm(page.words[i].text))) fill = style.emphasisColor;
+      if (isActive && style.highlightStyle !== "box") fill = style.highlightColor;
+      out.push({ i, text: words[i], width: ww, cx: x + advance / 2, cy: y, scale, alpha: alpha * wAlpha, isActive, fill });
+      x += advance + space;
+    });
+    y += lineH;
+  }
+  return { layout, alpha, dy, words: out };
+}
+
+/**
+ * Draw one caption word: highlight box, stroke, fill (with glow) and underline, scaled around its
+ * anchor. Expects ctx.font, textBaseline "middle", textAlign "left" and lineJoin "round" to be set.
+ */
+export function drawCaptionWord(ctx: Ctx2D, w: CaptionWordFrame, size: number, style: CaptionStyle): void {
+  const ww = w.width;
+  ctx.save();
+  ctx.globalAlpha = w.alpha;
+  ctx.translate(w.cx, w.cy);
+  ctx.scale(w.scale, w.scale);
+
+  if (w.isActive && style.highlightStyle === "box") {
+    const padX = size * 0.18;
+    const padY = size * 0.1;
+    ctx.fillStyle = style.boxColor;
+    ctx.beginPath();
+    const bw = ww + padX * 2;
+    const bh = size * 1.0 + padY * 2;
+    if (ctx.roundRect) ctx.roundRect(-bw / 2, -bh / 2, bw, bh, size * 0.18);
+    else ctx.rect(-bw / 2, -bh / 2, bw, bh);
+    ctx.fill();
+  }
+  if (style.strokeWidth > 0) {
+    ctx.lineWidth = size * style.strokeWidth;
+    ctx.strokeStyle = style.strokeColor;
+    ctx.strokeText(w.text, -ww / 2, 0);
+  }
+  if (style.glow) {
+    ctx.shadowColor = style.glow;
+    ctx.shadowBlur = size * 0.45;
+  }
+  ctx.fillStyle = w.fill;
+  ctx.fillText(w.text, -ww / 2, 0);
+  ctx.shadowBlur = 0;
+  if (w.isActive && style.highlightStyle === "underline") {
+    ctx.fillStyle = style.highlightColor;
+    ctx.beginPath();
+    ctx.rect(-ww / 2, size * 0.48, ww, size * 0.12);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * Draw one caption page as it looks at time t (seconds, same clock as the page's words).
+ * Used by the preview every frame and by the exporter at sampled times.
+ */
+export function drawCaptionFrame(ctx: Ctx2D, width: number, height: number, page: CaptionPage, style: CaptionStyle, t: number): void {
+  const f = captionFrame(ctx, width, height, page, style, t);
+  const { size, lines, lineH, blockH } = f.layout;
 
   ctx.save();
-  ctx.globalAlpha = alpha;
+  ctx.globalAlpha = f.alpha;
   if (style.background) {
     const widest = Math.max(...lines.map((l) => l.width));
     const padX = size * 0.45;
@@ -154,78 +299,14 @@ export function drawCaptionFrame(ctx: Ctx2D, width: number, height: number, page
     ctx.fillStyle = style.background;
     ctx.beginPath();
     const bx = (width - widest) / 2 - padX;
-    const by = y - lineH / 2 - padY;
+    const by = f.layout.top + f.dy - lineH / 2 - padY;
     if (ctx.roundRect) ctx.roundRect(bx, by, widest + padX * 2, blockH + padY * 2, size * 0.3);
     else ctx.rect(bx, by, widest + padX * 2, blockH + padY * 2);
     ctx.fill();
   }
 
   ctx.lineJoin = "round";
-  for (const l of lines) {
-    let x = (width - l.width) / 2;
-    for (const i of l.idx) {
-      const w = words[i];
-      const ww = widths[i];
-      const spoken = i <= active;
-      const isActive = style.highlight && i === active;
-      const wordAge = dur ? clamp01((t - page.words[i].start) / dur) : 1;
-      let scale = 1;
-      let wAlpha = 1;
-      if (style.animation === "reveal") {
-        if (!spoken) {
-          x += ww + space;
-          continue;
-        }
-        scale = 0.7 + 0.3 * easeOutBack(wordAge);
-        wAlpha = easeOutCubic(Math.min(1, wordAge * 2));
-      } else if (style.animation === "pop" && i === active) {
-        scale = 1 + 0.16 * (1 - easeOutCubic(wordAge)) + 0.04;
-      }
-      if (isActive && style.highlightStyle === "scale") scale *= 1.14;
-
-      const cx = x + ww / 2;
-      ctx.save();
-      ctx.globalAlpha = alpha * wAlpha;
-      ctx.translate(cx, y);
-      ctx.scale(scale, scale);
-
-      if (isActive && style.highlightStyle === "box") {
-        const padX = size * 0.18;
-        const padY = size * 0.1;
-        ctx.fillStyle = style.boxColor;
-        ctx.beginPath();
-        const bw = ww + padX * 2;
-        const bh = size * 1.0 + padY * 2;
-        if (ctx.roundRect) ctx.roundRect(-bw / 2, -bh / 2, bw, bh, size * 0.18);
-        else ctx.rect(-bw / 2, -bh / 2, bw, bh);
-        ctx.fill();
-      }
-      if (style.strokeWidth > 0) {
-        ctx.lineWidth = size * style.strokeWidth;
-        ctx.strokeStyle = style.strokeColor;
-        ctx.strokeText(w, -ww / 2, 0);
-      }
-      let fill = style.color;
-      if (emph.has(norm(page.words[i].text))) fill = style.emphasisColor;
-      if (isActive && style.highlightStyle !== "box") fill = style.highlightColor;
-      if (style.glow) {
-        ctx.shadowColor = style.glow;
-        ctx.shadowBlur = size * 0.45;
-      }
-      ctx.fillStyle = fill;
-      ctx.fillText(w, -ww / 2, 0);
-      ctx.shadowBlur = 0;
-      if (isActive && style.highlightStyle === "underline") {
-        ctx.fillStyle = style.highlightColor;
-        ctx.beginPath();
-        ctx.rect(-ww / 2, size * 0.48, ww, size * 0.12);
-        ctx.fill();
-      }
-      ctx.restore();
-      x += ww + space;
-    }
-    y += lineH;
-  }
+  for (const w of f.words) drawCaptionWord(ctx, w, size, style);
   ctx.restore();
 }
 
