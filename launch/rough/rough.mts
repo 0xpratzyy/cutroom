@@ -20,6 +20,8 @@ import { bindPremium, clamp, CORAL, expo, line, stage } from "../premium.mts";
 const OUT = "launch/out/rough";
 const W = 1920, H = 1080, FPS = 60, INNER_FPS = 24;
 const LIME = "#e8f47c", BONE = "#f4f2ef", GREY = "#8d8983", SOFT = "#d4d0ca";
+// the brand mark's violet (assets/brand: launch/brand/brand.mts), light to deep
+const VIOLET = { light: "#cbb6ff", mid: "#8b5cff", deep: "#5b2bd9" };
 GlobalFonts.registerFromPath("/System/Library/Fonts/SFNS.ttf", "SF");
 GlobalFonts.registerFromPath("/System/Library/Fonts/SFNSMono.ttf", "SFMono");
 GlobalFonts.registerFromPath("node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2", "Inter");
@@ -154,7 +156,7 @@ const v1Rewind = decode("v1", "1920:1080", RW_FPS, `trim=0:${(TL1 + 0.3).toFixed
 // ---------------------------------------------------------------- timeline (sequential, adapted to the take and the reads)
 const EXIT_LEN = 2.8;
 // The tour's shots, in order; B-roll's line runs on over the picture-in-picture shot, which has none.
-const TOUR_IDS = ["tPalette", "tFillers", "tPauses", "tZoom", "tCaptions", "tLooks", "tHook", "tSound", "tBroll", "tPip", "tVoice", "tExport"];
+const TOUR_IDS = ["tPalette", "tFillers", "tZoom", "tCaptions", "tLooks", "tHook", "tSound", "tBroll", "tPip", "tVoice", "tExport"];
 const TOUR_MIN: Record<string, number> = { tPalette: 1.6, tFillers: 1.3, tPauses: 1.3, tZoom: 1.3, tCaptions: 1.8, tLooks: 1.5, tHook: 1.8, tSound: 1.2, tBroll: 1.5, tPip: 1.3, tVoice: 2.0, tExport: 2.6 };
 function tourShotLen(id: string) {
   if (id === "tBroll") return TOUR_MIN.tBroll;
@@ -211,13 +213,13 @@ const T = (() => {
   mark("snap", 0.45);
   mark("final", FINAL_LEN);
   mark("finalEnd", 0.15);
-  mark("reveal"); t.voThree = at + 1.5;
-  at += Math.max(4.2, 1.5 + voEnd("three") + 0.6);
-  // review: the push-in and its line, then Before (the stammer, heard again), then After
+  mark("reveal"); t.voThree = at + 1.0;
+  at += Math.max(4.2, 1.0 + voEnd("three") + 0.5);
+  // review: the push-in, then Before and After, the narrator's line over both
   mark("review"); t.voReview = at + 0.15;
-  t.reviewPre = Math.max(0.4, 0.15 + voEnd("review") + 0.2);
+  t.reviewPre = 0.4;
   const bc = ev["before-click"] ?? 0, ac = ev["after-click"] ?? bc + 2;
-  at += Math.max(4.2, t.reviewPre + (ac - bc) + 1.2);
+  at += Math.max(4.2, t.reviewPre + (ac - bc) + 1.2, 0.15 + voEnd("review") + 0.5);
   // the tour: the editor's other tools, one shot per line, each as long as its line needs
   mark("tour");
   if (tourCap) {
@@ -1361,8 +1363,8 @@ async function act5(t: number) {
         x.stroke();
       }
     }
-    line("", W / 2, 984, 52, t, T.voThree - 0.05, { leave: T.review - 0.35, runs: [{ text: "Three notes. Claude made every change.", color: "gradient" }] });
-    line("", W / 2, 1044, 40, t, T.voThree + 0.6, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Over MCP, while you watched.", color: SOFT }] });
+    line("", W / 2, 984, 52, t, T.voThree - 0.05, { leave: T.review - 0.35, runs: [{ text: "Three notes. No timelines were harmed.", color: "gradient" }] });
+    line("", W / 2, 1044, 40, t, T.voThree + 0.6, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Claude made every change, over MCP.", color: SOFT }] });
   } else {
     // review it like a pull request: the real Before/After, pushed in on what changed
     const u = inOut(prog(t, T.review, 0.8));
@@ -1450,7 +1452,7 @@ async function act5(t: number) {
     g.addColorStop(1, `rgba(6,6,7,${(0.95 * fadeOut).toFixed(3)})`);
     x.fillStyle = g;
     x.fillRect(0, H - 250, W, 250);
-    line("", W / 2, 1046, 46, t, T.voReview - 0.05, { leave: T.tour - 0.5, runs: [{ text: "Review it like a pull request.", color: "gradient" }] });
+    line("", W / 2, 1046, 46, t, T.voReview - 0.05, { leave: T.tour - 0.5, runs: [{ text: "Review it like a pull request. ", color: "gradient" }, { text: "For your face.", color: LIME }] });
   }
 }
 
@@ -1466,24 +1468,22 @@ const unionBox = (...bs: (Box | undefined)[]): Box | undefined => {
 const TRc = tourCap?.rects ?? {};
 const WINDOW: Box = { x: 0, y: 0, width: 1440, height: 900 };
 const TOUR_LABEL: Record<string, string> = {
-  tPalette: "Every tool, one keystroke away.",
-  tFillers: "Kill the ums.",
-  tPauses: "Tighten the pauses.",
-  tZoom: "Punch in.",
-  tCaptions: "Captions, eight ways.",
-  tLooks: "Any look.",
-  tHook: "A hook that stops the scroll.",
-  tSound: "Studio sound.",
+  tPalette: "Oh, and it's a real editor.",
+  tFillers: "All those ums? Gone.",
+  tZoom: "Punch in. For drama.",
+  tCaptions: "Captions, in eight flavors.",
+  tLooks: "Make it moody.",
+  tHook: "Add a hook, so nobody scrolls past.",
+  tSound: "Studio sound. No studio.",
   tBroll: "B-roll.",
-  tPip: "Picture-in-picture.",
-  tVoice: "Or just say it.",
-  tExport: "Ship it vertical, square, or into Resolve.",
+  tPip: "Or picture-in-picture.",
+  tVoice: "Too lazy to type? Just say it.",
+  tExport: "Export tall, square, or to Resolve, if you must.",
 };
 const SHOTS: Shot[] = tourCap
   ? [
       { id: "tPalette", c0: tev["palette-in"] + 0.15, c1: tev["palette-end"] + 0.3, rect: padBox(TRc.palette, 36)!, fill: 0.78 },
       { id: "tFillers", c0: tev["fillers-in"] - 0.05, c1: tev["fillers"] + 0.9, rect: padBox(unionBox(TRc.fillersBtn, TRc.words), 28)!, fill: 0.8 },
-      { id: "tPauses", c0: tev["pauses-in"] - 0.05, c1: tev["pauses"] + 0.9, rect: padBox(unionBox(TRc.pausesBtn, TRc.words2 ?? TRc.words), 28)!, fill: 0.8 },
       { id: "tZoom", c0: tev["zoom-play"] - 0.05, c1: tev["zoom-end"], rect: padBox(TRc.frame, 18)!, fill: 0.88 },
       { id: "tCaptions", c0: tev["captions-in"] - 0.05, c1: tev["captions-pop"] + 0.55, rect: padBox(unionBox(TRc.frame, TRc.captionCards), 20)!, fill: 0.92 },
       { id: "tLooks", c0: tev["looks-in"] - 0.05, c1: tev["look-warm"] + 0.45, rect: padBox(unionBox(TRc.frame, TRc.lookCards), 20)!, fill: 0.92 },
@@ -1561,8 +1561,8 @@ function drawMark(px: number, py: number, k: number, o: { cut: number; blade: nu
   // a soft coral bloom behind it
   if ((o.glow ?? 0) > 0) {
     const g = x.createRadialGradient(px, py + 30 * k, 0, px, py + 30 * k, 420 * k);
-    g.addColorStop(0, `rgba(255,95,79,${(0.22 * o.glow!).toFixed(3)})`);
-    g.addColorStop(1, "rgba(255,95,79,0)");
+    g.addColorStop(0, `rgba(139,92,255,${(0.26 * o.glow!).toFixed(3)})`);
+    g.addColorStop(1, "rgba(139,92,255,0)");
     x.fillStyle = g;
     x.fillRect(px - 460 * k, py - 430 * k, 920 * k, 920 * k);
   }
@@ -1571,8 +1571,8 @@ function drawMark(px: number, py: number, k: number, o: { cut: number; blade: nu
   const dir = (deg: number, r: number) => ({ x: MARK.cx + r * Math.cos((deg * Math.PI) / 180), y: MARK.cy + r * Math.sin((deg * Math.PI) / 180) });
   const grad = () => {
     const g = x.createLinearGradient(0, MARK.cy - MARK.r, 0, MARK.tipY);
-    g.addColorStop(0, "#ff7a6e");
-    g.addColorStop(1, "#ff4f4f");
+    g.addColorStop(0, VIOLET.light);
+    g.addColorStop(1, VIOLET.deep);
     return g;
   };
   // the counter, open onto whatever is behind it
@@ -1687,8 +1687,8 @@ function act6(t: number, leave = 0) {
   x.save();
   x.globalAlpha = iu * stagger(4);
   const g = x.createRadialGradient(W / 2, H / 2 - 230, 0, W / 2, H / 2 - 230, 420);
-  g.addColorStop(0, `rgba(255,95,79,${0.2 * iu})`);
-  g.addColorStop(1, "rgba(255,95,79,0)");
+  g.addColorStop(0, `rgba(139,92,255,${0.24 * iu})`);
+  g.addColorStop(1, "rgba(139,92,255,0)");
   x.fillStyle = g;
   x.fillRect(0, 0, W, H);
   x.translate(W / 2, H / 2 - 230);
@@ -1773,7 +1773,7 @@ async function act7(t: number) {
     const pulse = pulseAt(lt) * (1 - go);
     x.save();
     x.globalAlpha = (0.45 + 0.55 * Math.max(pulse, go)) * (1 - grow);
-    x.fillStyle = CORAL;
+    x.fillStyle = mixHex(CORAL, VIOLET.mid, go);
     x.beginPath();
     x.arc(px, py, lerp(10 * (1 + 0.35 * pulse), MARK.r * k, grow), 0, Math.PI * 2);
     x.fill();
@@ -1858,7 +1858,6 @@ const cues = {
     { src: "v2", from: 0, len: TL2, at: T.pass2 },
     { src: "v3", from: TL2, len: TL3 - TL2, at: T.pass3 },
     { src: "v4", from: FINAL_IN, len: FINAL_LEN, at: T.final },
-    { src: "v1", from: 0, len: Math.max(0.5, aShownFilm - bcFilm), at: bcFilm },
   ],
   sfx: [
     { name: "pause", at: T.pause1 },

@@ -1,14 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ff7a6e"/>
-      <stop offset="1" stop-color="#ff4f4f"/>
+      <stop offset="0" stop-color="#cbb6ff"/>
+      <stop offset="1" stop-color="#5b2bd9"/>
     </linearGradient>
-    <mask id="cut">
-      <rect width="512" height="512" fill="#fff"/>
-      <circle cx="256" cy="232" r="66" fill="#000"/>
-      <polygon points="256,232 560,-72 700,232" fill="#000"/>
-    </mask>
+    <mask id="cut"><rect x="-200" y="-200" width="912" height="912" fill="#fff"/><circle cx="256" cy="232" r="66" fill="#000"/><polygon points="256,232 560,-72 700,232" fill="#000"/></mask>
   </defs>
   <path d="M146.3 334.3A150 150 0 1 1 365.7 334.3L256 452Z" fill="url(#g)" mask="url(#cut)"/>
   <line x1="304" y1="184" x2="362.6" y2="125.4" stroke="#e8f47c" stroke-width="7" stroke-linecap="round"/>

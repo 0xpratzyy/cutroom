@@ -1,12 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <mask id="cut">
-      <rect width="512" height="512" fill="#fff"/>
-      <circle cx="256" cy="236" r="62" fill="#000"/>
-      <polygon points="256,236 560,-68 700,236" fill="#000"/>
-    </mask>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7f2ff"/>
+      <stop offset="0.42" stop-color="#8b5cff"/>
+      <stop offset="1" stop-color="#5b2bd9"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="512" height="512" rx="114"/></clipPath>
+    <mask id="cut"><rect x="-200" y="-200" width="912" height="912" fill="#fff"/><circle cx="256" cy="232" r="66" fill="#000"/><polygon points="256,232 560,-72 700,232" fill="#000"/></mask>
   </defs>
-  <rect width="512" height="512" rx="114" fill="#141111"/>
-  <path d="M136 342A164 164 0 1 1 376 342L256 470Z" fill="#ff5c5c" mask="url(#cut)"/>
-  <line x1="300" y1="192" x2="372" y2="120" stroke="#e8f47c" stroke-width="14" stroke-linecap="round"/>
+  <g clip-path="url(#tile)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <g transform="translate(-92.8 -86.6) scale(1.3)">
+      <path d="M146.3 334.3A150 150 0 1 1 365.7 334.3L256 452Z" fill="#120a1f" mask="url(#cut)"/>
+      <line x1="304" y1="184" x2="362.6" y2="125.4" stroke="#e8f47c" stroke-width="9" stroke-linecap="round"/>
+    </g>
+  </g>
 </svg>

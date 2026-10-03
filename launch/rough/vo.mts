@@ -17,37 +17,38 @@ const arg = (k: string) => process.argv.find((a) => a.startsWith(`--${k}=`))?.sl
 
 // What the narrator says, in film order. `say` is the spelling the voice reads, when it differs.
 export const LINES: { id: string; text: string; say?: string }[] = [
-  { id: "launch", text: "This is our launch film." },
-  { id: "rough", text: "It's a rough cut." },
-  { id: "notes", text: "We're not editing it. We're leaving notes." },
-  { id: "claude", text: "That cut? That was Claude." },
-  { id: "what", text: "cutroom is the video editor Claude drives over MCP.", say: "Cutroom is the video editor Claude drives over MCP." },
-  { id: "point", text: "Point at the frame. Say what you want." },
-  { id: "ask", text: "Or just ask." },
-  { id: "three", text: "Three notes. Zero timelines." },
-  { id: "review", text: "Review it like a pull request." },
+  { id: "launch", text: "That's our launch film." },
+  { id: "rough", text: "We know." },
+  { id: "notes", text: "Nobody here wants to open a timeline. So we leave a note." },
+  { id: "claude", text: "We didn't do that. Claude did." },
+  { id: "what", text: "cutroom is a video editor Claude can drive. Over MCP, for the nerds.", say: "Cutroom is a video editor Claude can drive. Over MCP, for the nerds." },
+  { id: "point", text: "Draw a box. Use your words." },
+  { id: "ask", text: "Or just ask. Nicely." },
+  { id: "three", text: "Three notes. No timelines were harmed." },
+  { id: "review", text: "Review it like a pull request. For your face." },
   // the tour: the editor's other tools, one line per shot
-  { id: "tPalette", text: "Every tool, one keystroke away." },
-  { id: "tFillers", text: "Kill the ums." },
-  { id: "tPauses", text: "Tighten the pauses." },
-  { id: "tZoom", text: "Punch in." },
-  { id: "tCaptions", text: "Captions, eight ways." },
-  { id: "tLooks", text: "Any look." },
-  { id: "tHook", text: "A hook that stops the scroll." },
-  { id: "tSound", text: "Studio sound." },
-  { id: "tBroll", text: "B-roll. Picture-in-picture." },
-  { id: "tVoice", text: "Or just say it." },
-  { id: "tExport", text: "Ship it vertical, square, or into Resolve." },
+  { id: "tPalette", text: "Oh, and it's a real editor." },
+  { id: "tFillers", text: "All those ums? Gone." },
+  { id: "tZoom", text: "Punch in. For drama." },
+  { id: "tCaptions", text: "Captions, in eight flavors." },
+  { id: "tLooks", text: "Make it moody." },
+  { id: "tHook", text: "Add a hook, so nobody scrolls past." },
+  { id: "tSound", text: "Studio sound. No studio." },
+  { id: "tBroll", text: "B-roll. Or picture-in-picture." },
+  { id: "tVoice", text: "Too lazy to type? Just say it." },
+  { id: "tExport", text: "Export tall, square, or to Resolve, if you must." },
   { id: "name", text: "cutroom.", say: "Cutroom." },
   { id: "tagline", text: "Point at it. Claude fixes it." },
-  { id: "turn", text: "Your turn." },
+  { id: "turn", text: "Your turn. Go make something rough." },
 ];
 
-// The reads: two high-energy ones (the film's options) and the calm one it started with.
+// The reads: two lively, dry ones (the film's options) and the calm one it started with.
 type Settings = Record<string, number | boolean>;
-export const TAKES: Record<string, { name: string; voice: string; model: string; settings: Settings }> = {
-  a: { name: "Charlie", voice: "IKne3meq5aSn9XLyUdCD", model: "eleven_v4", settings: { stability: 0.35, similarity_boost: 0.85, speed: 1.05 } },
-  b: { name: "Laura", voice: "FGY2WhTYpPnrIDTdsKH5", model: "eleven_v4", settings: { stability: 0.35, similarity_boost: 0.85, speed: 1.05 } },
+export const TAKES: Record<string, { name: string; voice: string; model: string; settings: Settings; tempo?: number }> = {
+  // dry and conversational: low stability lets the read wander like a person's would
+  // v4 ignores `speed`, so `tempo` tightens the read afterwards (a pitch-preserving stretch)
+  a: { name: "Chris", voice: "iP95p4xoKVk53GoZ742B", model: "eleven_v4", settings: { stability: 0.3, similarity_boost: 0.85 }, tempo: 1.07 },
+  b: { name: "Laura", voice: "FGY2WhTYpPnrIDTdsKH5", model: "eleven_v4", settings: { stability: 0.3, similarity_boost: 0.85 }, tempo: 1.07 },
   calm: { name: "Marcus K", voice: "3H55HGnNE1XjYxigHSAS", model: "eleven_multilingual_v2", settings: { stability: 0.5, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true, speed: 0.95 } },
 };
 const TAKE = arg("take") ?? "a";
@@ -208,7 +209,14 @@ console.log(`take ${TAKE}: ${cfg.name} · ${cfg.model}`);
 const manifest: { take: string; name: string; voice: string; model: string; lines: Record<string, { file: string; dur: number; lead: number; end: number; text: string; words: Timed[] }> } = { take: TAKE, name: cfg.name, voice: cfg.voice, model: cfg.model, lines: {} };
 for (let i = 0; i < LINES.length; i++) {
   const t = await take(cfg.voice, cfg.model, i, LINES, cfg.settings);
-  const { out, from } = trim(readWav(t.wav));
+  const tempo = cfg.tempo ?? 1;
+  let wav = t.wav;
+  if (tempo !== 1) {
+    wav = t.wav.replace(/\.wav$/, `-x${tempo}.wav`);
+    if (!existsSync(wav)) execFileSync("ffmpeg", ["-v", "error", "-y", "-i", t.wav, "-af", `atempo=${tempo}`, "-c:a", "pcm_f32le", wav]);
+    t.words = t.words.map((w) => ({ ...w, s: w.s / tempo, e: w.e / tempo }));
+  }
+  const { out, from } = trim(readWav(wav));
   const file = join(dir, `${LINES[i].id}.wav`);
   writeWav(file, out);
   const r3 = (v: number) => Math.round(v * 1000) / 1000;

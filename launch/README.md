@@ -37,9 +37,11 @@ npx tsx launch/rough/mix.mts --take=a                       # mix, master to -14
 
 | File | Does |
 |---|---|
-| `rough/vo.mts` | The narrator's lines through ElevenLabs, with word timings; `--take=a` (Charlie) or `b` (Laura) |
+| `rough/vo.mts` | The narrator's lines through ElevenLabs, with word timings; `--take=a` (Chris) or `b` (Laura) |
 | `rough/capture-tour.mts` | Records the tour on a copy of the project: ⌘K, fillers, pauses, a zoom, caption templates, looks, a hook, studio sound, b-roll and PiP, a voice note, export aspects |
 | `rough/rough.mts` | The compositor: cold open, the three notes, the pull-back, the review, the tour, the end card and the exit; writes `cues.json` |
 | `rough/beat.mts` | ElevenLabs Music in two halves that meet at the film's stillness, so the drop lands on the bloom; `--style=a` (hybrid trap) or `b` (electro house) |
 | `rough/mix.mts` | Narrator, Reed's sync sound, foley, designed hits and the beat, ducked under speech and mastered |
 | `rough/music-rough.mts` | The original felt-piano score, and `--sfx-only` for the UI foley |
+| `brand/recolor.mts` | Colour studies of the app icon: the same glyph, light and grain through other palettes |
+| `brand/brand.mts` | Writes every brand asset from one icon: icon sizes, favicons (PNG and SVG), the editor's title-bar and touch icons, the flat mark, the README banner, the wordmark |

@@ -34,7 +34,8 @@ const at = (t: number) => Math.round(t * SR);
 
 // ---------------------------------------------------------------- reading audio
 function decode(file: string, ch: 1 | 2, from = 0, len?: number): Float32Array[] {
-  const args = ["-v", "error", ...(from ? ["-ss", String(from)] : []), "-i", file, ...(len ? ["-t", String(len)] : []), "-vn", "-ac", String(ch), "-ar", String(SR), "-f", "f32le", "-"];
+  // fixed decimals: a float like 1.8e-15 reads as an invalid time to ffmpeg
+  const args = ["-v", "error", ...(from > 1e-4 ? ["-ss", from.toFixed(4)] : []), "-i", file, ...(len ? ["-t", len.toFixed(4)] : []), "-vn", "-ac", String(ch), "-ar", String(SR), "-f", "f32le", "-"];
   const b = execFileSync("ffmpeg", args, { maxBuffer: 1 << 30 });
   const all = new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.length));
   if (ch === 1) return [all];
@@ -199,14 +200,12 @@ for (const [i, h] of beat.halves.entries()) {
   for (const s of music) for (let k = 0; k < N; k++) s[k] *= g;
 }
 // Shape: muffled under the cold open and the first note, swept open over Claude's first turn and the
-// rewind, so the groove arrives with "Hey, I'm Reed"; muffled a little again for the review's Before.
+// rewind, so the groove arrives with "Hey, I'm Reed".
 const ln = Math.log;
 const cutoff = (t: number) => {
   const open = 20000, shut = 650;
   if (t < S.turn1) return shut;
   if (t < S.pass2) return Math.exp(ln(shut) + (ln(open) - ln(shut)) * clamp((t - S.turn1) / (S.pass2 - S.turn1)) ** 2);
-  const before = cues.sync[cues.sync.length - 1];
-  if (before && t > before.at - 0.1 && t < before.at + before.len + 0.2) return 2400;
   return open;
 };
 sweepLowpass(music, 0, cutoff);
