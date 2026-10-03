@@ -24,7 +24,8 @@ const cues = JSON.parse(readFileSync(join(OUT, "cues.json"), "utf8")) as {
 };
 const S = cues.sections;
 const vo = JSON.parse(readFileSync(join(OUT, `vo-${take}.json`), "utf8")) as { name: string; lines: Record<string, { file: string; words: { s: number; e: number }[] }> };
-const beat = JSON.parse(readFileSync(join(OUT, `beat-${beatStyle}.json`), "utf8")) as { halves: { file: string; at: number; trim: number; until?: number }[] };
+// each half sits on the film's clock by a named section (see beat.mts), so it survives re-timing
+const beat = JSON.parse(readFileSync(join(OUT, `beat-${beatStyle}.json`), "utf8")) as { halves: { file: string; anchor: string; anchorAt: number; from?: string; until?: string }[] };
 const N = Math.ceil((cues.duration + 0.05) * SR);
 const L = new Float32Array(N), R = new Float32Array(N); // the final mix, pre-master
 const db = (v: number) => 10 ** (v / 20);
@@ -157,9 +158,10 @@ const peakTo = (s: Float32Array, dbfs: number) => {
 if (stems) writeStem("speech", L, R);
 const music = [new Float32Array(N), new Float32Array(N)];
 for (const [i, h] of beat.halves.entries()) {
-  let until = h.until ?? cues.duration + 1;
-  const len = Math.min(until - h.at, cues.duration - h.at + 0.05);
-  let [l, r] = decode(h.file, 2, h.trim, len);
+  const at0 = S[h.anchor] - h.anchorAt; // the film time of the track's first sample
+  const start = Math.max(0, at0, h.from ? S[h.from] : at0);
+  let until = Math.min(h.until ? S[h.until] : cues.duration + 1, cues.duration + 0.05);
+  let [l, r] = decode(h.file, 2, start - at0, until - start);
   if (i === 0) {
     // if the model starts its drop before the stillness, cut half one just before that first hit
     const e = (a: number, b: number) => {
@@ -170,17 +172,17 @@ for (const [i, h] of beat.halves.entries()) {
     for (let k = l.length - at(1.5); k < l.length - at(0.05); k += at(0.01)) {
       if (k < at(0.5)) continue;
       if (10 * Math.log10((e(k, k + at(0.05)) + 1e-12) / (e(k - at(0.4), k) + 1e-12)) > 6) {
-        console.log(`  half one's drop starts early at ${(h.at + k / SR).toFixed(2)} s: cut there`);
+        console.log(`  half one's drop starts early at ${(start + k / SR).toFixed(2)} s: cut there`);
         (l = l.slice(0, k - at(0.02))), (r = r.slice(0, k - at(0.02)));
-        until = h.at + l.length / SR;
+        until = start + l.length / SR;
         break;
       }
     }
   }
-  const o = at(h.at), fo = i === 0 ? 0.035 * SR : 0.6 * SR;
+  const o = at(start), fi = h.from ? at(0.02) : 96, fo = i === 0 ? 0.035 * SR : 0.6 * SR;
   for (let k = 0; k < l.length; k++) {
     if (o + k >= N) break;
-    const e = Math.min(1, k / 96, (l.length - 1 - k) / fo);
+    const e = Math.min(1, k / fi, (l.length - 1 - k) / fo);
     music[0][o + k] += l[k] * e;
     music[1][o + k] += r[k] * e;
   }
@@ -330,6 +332,7 @@ for (const e of cues.sfx) {
   }
 }
 place(impact(1.6, -4), S.bloom, 1, 1, 200); // the drop
+place(impact(1.3, -7), S.pause1, 1, 1, 200); // the take freezes and the film begins
 place(impact(2.4, -5), S.exit + 1.2, 1, 1, 400); // the last cut
 // the rewind: a tape chattering backwards, under the picture's own rewind
 {

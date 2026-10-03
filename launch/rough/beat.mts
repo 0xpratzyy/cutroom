@@ -5,7 +5,9 @@
 // inside a section. A key and a tempo are named in both halves so they belong together.
 // Generations are cached by their composition plan, so a re-run only pays for what changed.
 // Key: ELEVENLABS_API_KEY in the environment, or in launch/.env.local (git-ignored).
-// Usage: npx tsx launch/rough/beat.mts [--style=a|b]  ->  launch/out/rough/beat-<style>-{1,2}.wav + beat-<style>.json
+// Each half records where it sits on the film's clock by a section name (its anchor), so the mix can
+// place it on a later cut of the timeline without composing it again.
+// Usage: npx tsx launch/rough/beat.mts [--style=a|b] [--half=1|2]  ->  launch/out/rough/beat-<style>-{1,2}.wav + beat-<style>.json
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,6 +17,7 @@ const OUT = "launch/out/rough";
 const CACHE = join(OUT, "beat-cache");
 mkdirSync(CACHE, { recursive: true });
 const style = process.argv.find((a) => a.startsWith("--style="))?.slice(8) ?? "a";
+const only = process.argv.find((a) => a.startsWith("--half="))?.slice(7);
 const cues = JSON.parse(readFileSync(join(OUT, "cues.json"), "utf8")) as { duration: number; sections: Record<string, number> };
 const S = cues.sections;
 
@@ -40,6 +43,7 @@ const STYLES: Record<string, Style> = {
       build: ["tension build that keeps rising to the very last second", "accelerating snare roll", "rising synth riser", "filter sweep up", "maximum tension"],
       drop: ["starts immediately with a massive drop on the very first beat", "huge distorted 808s", "aggressive synth stabs", "braam hits", "peak energy"],
       breakdown: ["breakdown", "drums drop out", "dark pad and sub only", "quiet"],
+      drop2: ["the full beat slams back in on the first beat", "driving 808s and rolling hi-hats", "bouncy and confident", "high energy that keeps moving"],
       outro: ["the beat comes back for one last phrase", "ends on one huge final impact hit", "long decaying sub tail"],
     },
   },
@@ -53,6 +57,7 @@ const STYLES: Record<string, Style> = {
       build: ["build-up that keeps rising to the very last second", "accelerating snare roll", "white noise riser", "pitch rising", "maximum tension"],
       drop: ["starts immediately with a euphoric drop on the very first beat", "huge supersaw chords", "heavy sidechain pumping", "big kick", "peak energy"],
       breakdown: ["breakdown", "kick out", "airy chords and plucks", "quiet"],
+      drop2: ["the full house beat slams back in on the first beat", "punchy kick and clap", "bouncy bassline", "bright and driving"],
       outro: ["the groove returns for one last phrase", "ends on one big final chord hit", "reverb tail"],
     },
   },
@@ -117,24 +122,31 @@ function firstHit(rms: number[], within: number) {
   return 0;
 }
 
-// Half one: from the entry's cut to the bloom. It's composed a few seconds into a drop it never plays,
-// so the build rises all the way to the cut instead of winding down like the end of a track; the mix
-// cuts it at the stillness.
-const one = await compose(1, S.cutMark, [["impact", S.cutMark], ["sparse", S.cutMark + 3], ["groove", S.pass2], ["build", S.pass3], ["drop", S.bloom]], S.bloom + 4);
-// Half two: from the bloom to past the last frame.
-const two = await compose(2, S.bloom, [["drop", S.bloom], ["breakdown", S.review], ["outro", S.end]], cues.duration + 1.5);
-// Half two is trimmed so its first real hit is the bloom's first frame (models like a short lead-in).
-const trim2 = Math.min(2.5, firstHit(two.rms, 4));
-const trim1 = Math.min(0.5, firstHit(one.rms, 1.5));
-const out = {
-  style,
-  halves: [
-    { file: one.wav, at: S.cutMark, trim: trim1, until: S.still, duration: one.duration, plan: one.plan },
-    { file: two.wav, at: S.bloom, trim: trim2, duration: two.duration, plan: two.plan },
-  ],
+const json = join(OUT, `beat-${style}.json`);
+type Half = { file: string; anchor: string; anchorAt: number; from?: string; until?: string; duration: number; plan: unknown };
+const out: { style: string; halves: Half[] } = existsSync(json) ? JSON.parse(readFileSync(json, "utf8")) : { style, halves: [] };
+const sectionStart = (plan: { sections: { section_name: string; duration_ms: number }[] }, name: string) => {
+  let at = 0;
+  for (const sct of plan.sections) {
+    if (sct.section_name === name) return at / 1000;
+    at += sct.duration_ms;
+  }
+  throw new Error(`no section ${name}`);
 };
-writeFileSync(join(OUT, `beat-${style}.json`), JSON.stringify(out, null, 1));
-const env = (h: typeof one, a: number, b: number) => db(Math.sqrt(h.rms.slice(Math.round(a * 100), Math.round(b * 100)).reduce((p, v) => p + v * v, 0) / Math.max(1, Math.round((b - a) * 100))));
-console.log(`beat-${style}: half 1 ${one.duration.toFixed(1)} s (first hit ${trim1.toFixed(2)} s), half 2 ${two.duration.toFixed(1)} s (first hit ${trim2.toFixed(2)} s)`);
-console.log(`  half 1 by section: impact ${env(one, 0, 3).toFixed(1)} dB · sparse ${env(one, 3, S.pass2 - S.cutMark).toFixed(1)} · groove ${env(one, S.pass2 - S.cutMark, S.pass3 - S.cutMark).toFixed(1)} · build ${env(one, S.pass3 - S.cutMark, S.still - S.cutMark).toFixed(1)} (last 2 s ${env(one, S.still - S.cutMark - 2, S.still - S.cutMark).toFixed(1)}) · unused drop ${env(one, S.bloom - S.cutMark, one.duration).toFixed(1)}`);
-console.log(`  half 2 by section: drop ${env(two, trim2, trim2 + S.review - S.bloom).toFixed(1)} dB · breakdown ${env(two, trim2 + S.review - S.bloom, trim2 + S.end - S.bloom).toFixed(1)} · outro ${env(two, trim2 + S.end - S.bloom, two.duration).toFixed(1)}`);
+if (!only || only === "1") {
+  // Half one: from the take's pause to the bloom. It's composed a few seconds into a drop it never
+  // plays, so the build rises all the way to the cut instead of winding down like the end of a track;
+  // the mix cuts it at the stillness. It opens on an impact, placed on the pause.
+  const one = await compose(1, S.pause1, [["impact", S.pause1], ["sparse", S.pause1 + 3], ["groove", S.pass2], ["build", S.pass3], ["drop", S.bloom]], S.bloom + 4);
+  out.halves[0] = { file: one.wav, anchor: "pass2", anchorAt: sectionStart(one.plan, "groove"), from: "pause1", until: "still", duration: one.duration, plan: one.plan };
+  console.log(`beat-${style} half 1: ${one.duration.toFixed(1)} s`);
+}
+if (!only || only === "2") {
+  // Half two: from the bloom past the last frame, with a second drop for the tour. It's trimmed so its
+  // first real hit is the bloom's first frame (models like a short lead-in).
+  const two = await compose(2, S.bloom, [["drop", S.bloom], ["breakdown", S.review], ["drop2", S.tour], ["outro", S.end]], cues.duration + 1.5);
+  const trim2 = Math.min(2.5, firstHit(two.rms, 4));
+  out.halves[1] = { file: two.wav, anchor: "bloom", anchorAt: trim2, duration: two.duration, plan: two.plan };
+  console.log(`beat-${style} half 2: ${two.duration.toFixed(1)} s (first hit ${trim2.toFixed(2)} s)`);
+}
+writeFileSync(json, JSON.stringify(out, null, 1));

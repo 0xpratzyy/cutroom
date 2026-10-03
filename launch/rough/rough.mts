@@ -1,9 +1,8 @@
-// "Rough Cut": the launch film Claude edits while you watch. The cutroom mark is cut out of a note
-// pin and the camera flies through it into the film's own rough cut, which stammers and pauses; a
-// cursor points at what's wrong on the picture; Claude, connected over MCP, edits the film you're
-// watching (cuts the false start, turns the box into a 9:16 Short, grades and captions it); then
-// the camera pulls back into the real cutroom project, and the film ends inside a live
-// wait_for_feedback call before the waiting dot is cut back into the mark.
+// "Rough Cut": the launch film Claude edits while you watch. It opens on its own rough cut, which
+// stammers and pauses; a cursor points at what's wrong on the picture; Claude, connected over MCP,
+// edits the film you're watching (cuts the false start, turns the box into a 9:16 Short, grades and
+// captions it); then the camera pulls back into the real cutroom project, and the film ends inside a
+// live wait_for_feedback call before the waiting dot is cut into the cutroom mark.
 //
 // Every picture state is a genuine cutroom export of the captured session (states.mts); the
 // MCP log lines are the real calls (mcp-log.jsonl), time-compressed only while the picture is
@@ -43,6 +42,20 @@ function capIndex(c: number) {
   return lo;
 }
 const capFile = (c: number) => join(OUT, "capture", cap.frames[capIndex(c)].file);
+// The feature tour (capture-tour.mts): the same editor on the same take, the user's own edits.
+const tourCap = existsSync(join(OUT, "tour/frames.json")) ? (JSON.parse(readFileSync(join(OUT, "tour/frames.json"), "utf8")) as typeof cap) : null;
+const tourT0 = tourCap?.events.find((e) => e.name === "start")?.t ?? 0;
+const tev = Object.fromEntries((tourCap?.events ?? []).map((e) => [e.name, e.t - tourT0])) as Record<string, number>;
+const tourTimes = (tourCap?.frames ?? []).map((f) => f.t - tourT0);
+function tourFile(c: number) {
+  let lo = 0, hi = tourTimes.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (tourTimes[mid] <= c) lo = mid;
+    else hi = mid - 1;
+  }
+  return join(OUT, "tour", tourCap!.frames[lo].file);
+}
 const statesWords = JSON.parse(readFileSync(join(OUT, "states/words.json"), "utf8")) as Record<string, Word[]> & { duration: Record<string, number> };
 const snap = (v: string) => JSON.parse(readFileSync(join(OUT, `snapshots/${v}.json`), "utf8"));
 const v3snap = snap("v3");
@@ -139,17 +152,21 @@ const RW_FPS = 120;
 const v1Rewind = decode("v1", "1920:1080", RW_FPS, `trim=0:${(TL1 + 0.3).toFixed(2)},minterpolate=fps=${RW_FPS}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,`, `v1-rw-${TL1.toFixed(2)}`);
 
 // ---------------------------------------------------------------- timeline (sequential, adapted to the take and the reads)
-const ZOOM_LEN = 0.6; // the flight through the mark's counter into the take
-const EXIT_LEN = 2.8; // the end card dissolves to its waiting dot, which is cut back into the mark
+const EXIT_LEN = 2.8;
+// The tour's shots, in order; B-roll's line runs on over the picture-in-picture shot, which has none.
+const TOUR_IDS = ["tPalette", "tFillers", "tPauses", "tZoom", "tCaptions", "tLooks", "tHook", "tSound", "tBroll", "tPip", "tVoice", "tExport"];
+const TOUR_MIN: Record<string, number> = { tPalette: 1.6, tFillers: 1.3, tPauses: 1.3, tZoom: 1.3, tCaptions: 1.8, tLooks: 1.5, tHook: 1.8, tSound: 1.2, tBroll: 1.5, tPip: 1.3, tVoice: 2.0, tExport: 2.6 };
+function tourShotLen(id: string) {
+  if (id === "tBroll") return TOUR_MIN.tBroll;
+  if (id === "tPip") return Math.max(TOUR_MIN.tPip, voEnd("tBroll") - TOUR_MIN.tBroll + 0.35);
+  return Math.max(TOUR_MIN[id], voEnd(id) + 0.32);
+} // the end card dissolves to its waiting dot, which is cut back into the mark
 const T = (() => {
   const t: Record<string, number> = {};
   let at = 0;
   const mark = (k: string, d = 0) => ((t[k] = at), (at += d));
-  // entry: a note pin lands on black, a lime cut makes it the cutroom mark, the camera flies through
-  mark("entry");
-  t.pinIn = 0.2; t.cutMark = 0.85; t.zoom = 1.55;
-  at = t.zoom;
-  // cold open: the rough cut plays from its first frame, sound and all, and pauses after the stammer
+  // cold open: the film starts on the rough cut playing from its first frame, sound and all, and
+  // pauses after the stammer
   mark("cold");
   at += TL1;
   mark("pause1");
@@ -201,6 +218,16 @@ const T = (() => {
   t.reviewPre = Math.max(0.4, 0.15 + voEnd("review") + 0.2);
   const bc = ev["before-click"] ?? 0, ac = ev["after-click"] ?? bc + 2;
   at += Math.max(4.2, t.reviewPre + (ac - bc) + 1.2);
+  // the tour: the editor's other tools, one shot per line, each as long as its line needs
+  mark("tour");
+  if (tourCap) {
+    for (const id of TOUR_IDS) {
+      t[`shot_${id}`] = at;
+      if (id !== "tPip") t[`vo${id[0].toUpperCase()}${id.slice(1)}`] = at + 0.08;
+      at += tourShotLen(id);
+    }
+  }
+  mark("tourEnd");
   // the end card says its name and its line, then hands it to you
   mark("end"); t.voName = at + 0.7; t.tagIn = t.voName + voEnd("name") + 0.25; t.voTagline = t.tagIn;
   t.waitIn = t.tagIn + 1.0; t.pillIn = t.waitIn + 0.5; t.footIn = t.pillIn + 0.3;
@@ -216,7 +243,8 @@ const REVIEW_C0 = (ev["before-click"] ?? 0) - T.reviewPre;
 // ---------------------------------------------------------------- canvas + helpers
 const canvas = createCanvas(W, H);
 const x = canvas.getContext("2d") as SKRSContext2D;
-const icon = await loadImage("assets/brand/icon-1024.png");
+// ROUGH_ICON swaps the end card's app icon (to try a new mark before it lands in assets/brand)
+const icon = await loadImage(process.env.ROUGH_ICON ?? "assets/brand/icon-1024.png");
 bindPremium(x, { sans: "SF", mono: "SFMono", icon });
 const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
 const inOut = (u: number) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * clamp(u) + 2, 3) / 2);
@@ -797,8 +825,8 @@ async function act1(t: number) {
   scrimRight(expo(prog(t, T.turn1 - 0.2, 0.8)));
   const v = t < T.pass2 ? "v1" : "v2";
   const playing = t < T.pause1 || (t >= T.rewind && t < T.freeze2);
-  // the burn-ins arrive once the camera is through the mark; the slug lights up as the narrator says "rough cut"
-  const hudIn = expo(prog(t, T.cold + ZOOM_LEN - 0.1, 0.5));
+  // the slug lights up as the narrator says "rough cut"
+  const hudIn = 1;
   const hot = Math.sin(Math.PI * prog(t, T.voRough + voWord("rough", 2) - 0.05, 0.9));
   hudFull({ version: v, aspect: "16:9", durS: v === "v1" ? dur.v1 : dur.v2, tl: tlNow, paused: !playing }, hudIn, hot);
   // the shorter take, proven, on a burn-in plate clear of Reed
@@ -846,7 +874,7 @@ async function act1(t: number) {
   const { y, size } = TR1;
   let anchorX = W / 2 - 300;
   if (t < T.pass2) {
-    const lineIn = expo(prog(t, T.cold + ZOOM_LEN - 0.1, 0.5));
+    const lineIn = 1;
     const foldU = expo(prog(t, T.fold1, 0.4));
     const boxes = layoutLine(lineV1, size, W / 2, { idx: SEL, u: foldU });
     const cu = expo(prog(t, T.dragStart, T.dragEnd - T.dragStart));
@@ -1196,10 +1224,10 @@ function camRect(cam: Cam, r: Box): Box {
   const k = BASE * cam.z;
   return { x: W / 2 + (r.x - cam.x) * k, y: H / 2 + (r.y - cam.y) * k, width: r.width * k, height: r.height * k };
 }
-async function drawEditor(c: number, cam: Cam, alpha = 1) {
+async function drawEditor(c: number, cam: Cam, alpha = 1, file: (c: number) => string = capFile) {
   if (alpha <= 0) return;
   const k = BASE * cam.z;
-  const frame = await img(capFile(c));
+  const frame = await img(file(c));
   x.save();
   x.globalAlpha = alpha;
   x.translate(W / 2, H / 2);
@@ -1335,12 +1363,12 @@ async function act5(t: number) {
     }
     line("", W / 2, 984, 52, t, T.voThree - 0.05, { leave: T.review - 0.35, runs: [{ text: "Three notes. Claude made every change.", color: "gradient" }] });
     line("", W / 2, 1044, 40, t, T.voThree + 0.6, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Over MCP, while you watched.", color: SOFT }] });
-  } else if (t < T.end) {
+  } else {
     // review it like a pull request: the real Before/After, pushed in on what changed
     const u = inOut(prog(t, T.review, 0.8));
     const cam: Cam = { x: lerp(camWide.x, camReview.x, u), y: lerp(camWide.y, camReview.y, u), z: Math.exp(lerp(Math.log(camWide.z), Math.log(camReview.z), u)) };
     const c = REVIEW_C0 + (t - T.review);
-    const fadeOut = 1 - inOut(prog(t, T.end - 0.6, 0.6));
+    const fadeOut = 1 - inOut(prog(t, T.tour - 0.45, 0.45));
     await drawEditor(c, cam, fadeOut);
     const bc = ev["before-click"] ?? 0;
     const aT = afterShown ?? bc + 2;
@@ -1422,8 +1450,84 @@ async function act5(t: number) {
     g.addColorStop(1, `rgba(6,6,7,${(0.95 * fadeOut).toFixed(3)})`);
     x.fillStyle = g;
     x.fillRect(0, H - 250, W, 250);
-    line("", W / 2, 1046, 46, t, T.voReview - 0.05, { leave: T.end - 0.5, runs: [{ text: "Review it like a pull request.", color: "gradient" }] });
+    line("", W / 2, 1046, 46, t, T.voReview - 0.05, { leave: T.tour - 0.5, runs: [{ text: "Review it like a pull request.", color: "gradient" }] });
   }
+}
+
+// ---------------------------------------------------------------- the tour: macro shots of the real editor, one tool per line
+type Shot = { id: string; c0: number; c1: number; rect: Box; fill: number; label?: string };
+const padBox = (r: Box | undefined, p: number): Box | undefined => (r ? { x: r.x - p, y: r.y - p, width: r.width + 2 * p, height: r.height + 2 * p } : undefined);
+const unionBox = (...bs: (Box | undefined)[]): Box | undefined => {
+  const v = bs.filter(Boolean) as Box[];
+  if (!v.length) return undefined;
+  const x0 = Math.min(...v.map((b) => b.x)), y0 = Math.min(...v.map((b) => b.y));
+  return { x: x0, y: y0, width: Math.max(...v.map((b) => b.x + b.width)) - x0, height: Math.max(...v.map((b) => b.y + b.height)) - y0 };
+};
+const TRc = tourCap?.rects ?? {};
+const WINDOW: Box = { x: 0, y: 0, width: 1440, height: 900 };
+const TOUR_LABEL: Record<string, string> = {
+  tPalette: "Every tool, one keystroke away.",
+  tFillers: "Kill the ums.",
+  tPauses: "Tighten the pauses.",
+  tZoom: "Punch in.",
+  tCaptions: "Captions, eight ways.",
+  tLooks: "Any look.",
+  tHook: "A hook that stops the scroll.",
+  tSound: "Studio sound.",
+  tBroll: "B-roll.",
+  tPip: "Picture-in-picture.",
+  tVoice: "Or just say it.",
+  tExport: "Ship it vertical, square, or into Resolve.",
+};
+const SHOTS: Shot[] = tourCap
+  ? [
+      { id: "tPalette", c0: tev["palette-in"] + 0.15, c1: tev["palette-end"] + 0.3, rect: padBox(TRc.palette, 36)!, fill: 0.78 },
+      { id: "tFillers", c0: tev["fillers-in"] - 0.05, c1: tev["fillers"] + 0.9, rect: padBox(unionBox(TRc.fillersBtn, TRc.words), 28)!, fill: 0.8 },
+      { id: "tPauses", c0: tev["pauses-in"] - 0.05, c1: tev["pauses"] + 0.9, rect: padBox(unionBox(TRc.pausesBtn, TRc.words2 ?? TRc.words), 28)!, fill: 0.8 },
+      { id: "tZoom", c0: tev["zoom-play"] - 0.05, c1: tev["zoom-end"], rect: padBox(TRc.frame, 18)!, fill: 0.88 },
+      { id: "tCaptions", c0: tev["captions-in"] - 0.05, c1: tev["captions-pop"] + 0.55, rect: padBox(unionBox(TRc.frame, TRc.captionCards), 20)!, fill: 0.92 },
+      { id: "tLooks", c0: tev["looks-in"] - 0.05, c1: tev["look-warm"] + 0.45, rect: padBox(unionBox(TRc.frame, TRc.lookCards), 20)!, fill: 0.92 },
+      { id: "tHook", c0: tev["hook-in"], c1: tev["hook"] + 0.8, rect: padBox(unionBox(TRc.frame, TRc.hookPanel), 20)!, fill: 0.92 },
+      { id: "tSound", c0: tev["sound-in"] - 0.05, c1: tev["sound"] + 0.6, rect: padBox(TRc.soundCards, 28)!, fill: 0.78 },
+      { id: "tBroll", c0: tev["broll-in"] - 0.05, c1: tev["broll"] + 1.3, rect: padBox(unionBox(TRc.frame, TRc.mediaItem), 20)!, fill: 0.92 },
+      { id: "tPip", c0: tev["pip"] - 0.05, c1: tev["pip"] + 1.45, rect: padBox(TRc.frame, 18)!, fill: 0.88 },
+      { id: "tVoice", c0: tev["voice-in"] - 0.05, c1: tev["voice-note"] + 0.8, rect: padBox(unionBox(TRc.frame, TRc.voiceCard), 20)!, fill: 0.92 },
+      { id: "tExport", c0: tev["export-in"] - 0.05, c1: tev["export-handoff"] + 0.6, rect: padBox(unionBox(TRc.frame, TRc.exportPanel), 20)!, fill: 0.92 },
+    ].map((sh) => ({ ...sh, rect: sh.rect ?? WINDOW, label: TOUR_LABEL[sh.id] }))
+  : [];
+async function actTour(t: number) {
+  stage(1.2);
+  const i = Math.max(0, SHOTS.findIndex((sh, k) => t < (k + 1 < SHOTS.length ? T[`shot_${SHOTS[k + 1].id}`] : T.tourEnd)));
+  const sh = SHOTS[i];
+  if (!sh) return;
+  const t0 = T[`shot_${sh.id}`], t1 = i + 1 < SHOTS.length ? T[`shot_${SHOTS[i + 1].id}`] : T.tourEnd;
+  const u = clamp((t - t0) / (t1 - t0));
+  // the capture window fills the shot (sped up when the real action took longer than the line)
+  const c = sh.c0 + u * (sh.c1 - sh.c0);
+  // each shot frames its tool, pushes in a little, and lands with a short scale-and-focus
+  const base = fitCam(sh.rect, sh.fill);
+  const land = expo(prog(t, t0, 0.22));
+  const cam: Cam = { ...base, z: base.z * (1 + 0.045 * u) * lerp(0.94, 1, land) };
+  x.save();
+  if (land < 1) x.filter = `blur(${((1 - land) * 10).toFixed(1)}px)`;
+  await drawEditor(c, cam, lerp(0.4, 1, land), tourFile);
+  x.restore();
+  // a dark band and the line, as it's said
+  const g = x.createLinearGradient(0, H - 260, 0, H);
+  g.addColorStop(0, "rgba(6,6,7,0)");
+  g.addColorStop(1, "rgba(6,6,7,0.92)");
+  x.fillStyle = g;
+  x.fillRect(0, H - 260, W, 260);
+  if (sh.label) line("", W / 2, 1030, 62, t, t0 + 0.04, { weight: 700, leave: t1 - 0.16, runs: [{ text: sh.label, color: "gradient" }] });
+  // a lime tick for each tool, in the corner: how far through the tour we are
+  x.save();
+  for (let k = 0; k < SHOTS.length; k++) {
+    x.fillStyle = k <= i ? LIME : "rgba(255,255,255,0.18)";
+    x.globalAlpha = k === i ? 1 : 0.8;
+    rrect(W - 60 - (SHOTS.length - k) * 22, 60, 14, 4, 2);
+    x.fill();
+  }
+  x.restore();
 }
 
 // ---------------------------------------------------------------- the mark: a note pin with a cut taken out of it
@@ -1441,7 +1545,7 @@ function pinPath(p: Path2D | SKRSContext2D) {
 /**
  * The cutroom mark at (px, py) (the counter's centre), `k` screen px per mark unit. `cut` opens the
  * counter and throws the wedge out (0 = a whole pin, 1 = the mark); `blade` draws the lime cut in
- * from outside (0 to 1); `portal` fills the counter with whatever `fill` draws (the take, on the entry).
+ * from outside (0 to 1); `portal`, if given, draws whatever shows through the open counter.
  */
 function drawMark(px: number, py: number, k: number, o: { cut: number; blade: number; alpha?: number; blur?: number; glow?: number; portal?: () => void }) {
   const a = o.alpha ?? 1;
@@ -1553,30 +1657,9 @@ function drawMark(px: number, py: number, k: number, o: { cut: number; blade: nu
   x.restore();
 }
 
-// ---------------------------------------------------------------- act 0: the entry
-const MARK_K = 360 / 512; // the mark at 360 px across its box
+// where the mark sits when it's whole: centred, at 360 px across its box
+const MARK_K = 360 / 512;
 const MARK_AT = { x: W / 2, y: H / 2 - 35 * MARK_K }; // the counter, so the whole pin sits centred
-async function act0(t: number) {
-  stage(0);
-  const inU = expo(prog(t, T.pinIn, 0.55));
-  const cut = prog(t, T.cutMark, 0.42);
-  const blade = prog(t, T.cutMark - 0.04, 0.32);
-  // the flight: the counter grows from the middle of the frame until the take fills it
-  const zu = prog(t, T.zoom, ZOOM_LEN);
-  const z = Math.exp(Math.log(34) * zu ** 2.6);
-  const py = lerp(MARK_AT.y, H / 2, inOut(zu));
-  const breathe = 1 + 0.03 * prog(t, T.cutMark, T.zoom - T.cutMark);
-  const tl = Math.max(0, t - T.cold);
-  const frame = t >= T.zoom ? await img(inner.v1(tl)) : null;
-  drawMark(MARK_AT.x, py, MARK_K * breathe * z * lerp(0.9, 1, inU), {
-    cut,
-    blade,
-    alpha: inU,
-    blur: (1 - inU) * 12,
-    glow: inU * (1 - zu),
-    portal: frame ? () => x.drawImage(frame, 0, 0, W, H) : undefined,
-  });
-}
 
 // ---------------------------------------------------------------- act 6: the end, waiting for your note
 const PULSE0 = T.waitIn - T.end + 0.6; // first peak of the waiting dot, seconds into the end card
@@ -1703,12 +1786,12 @@ async function act7(t: number) {
 async function render(t: number) {
   x.globalAlpha = 1;
   x.filter = "none";
-  if (t < T.cold + ZOOM_LEN) await act0(t);
-  else if (t < T.box) await act1(t);
+  if (t < T.box) await act1(t);
   else if (t < T.cursorUp) await act2(t);
   else if (t < T.snap) await act3(t);
   else if (t < T.reveal) await act4(t);
-  else if (t < T.end) await act5(t);
+  else if (t < T.tour) await act5(t);
+  else if (t < T.end) await actTour(t);
   else if (t < T.exit) act6(t);
   else await act7(t);
   finish(t);
@@ -1768,7 +1851,7 @@ const cues = {
   endPulses: [0, 1, 2].map((k) => T.end + PULSE0 + k * 1.2).filter((p) => p < T.exit + 0.8),
   rewind: { from: T.rewind, to: T.pass2 },
   // the narrator's lines, by id (vo-<take>.json has the files)
-  vo: ["launch", "rough", "notes", "claude", "what", "point", "ask", "three", "review", "name", "tagline", "turn"].map((id) => ({ id, at: T[`vo${id[0].toUpperCase()}${id.slice(1)}`] })),
+  vo: ["launch", "rough", "notes", "claude", "what", "point", "ask", "three", "review", ...TOUR_IDS.filter((id) => id !== "tPip"), "name", "tagline", "turn"].map((id) => ({ id, at: T[`vo${id[0].toUpperCase()}${id.slice(1)}`] })).filter((v) => v.at !== undefined),
   // Reed's own sound, whenever the film inside the film plays at speed
   sync: [
     { src: "v1", from: 0, len: TL1, at: T.cold },
@@ -1778,9 +1861,6 @@ const cues = {
     { src: "v1", from: 0, len: Math.max(0.5, aShownFilm - bcFilm), at: bcFilm },
   ],
   sfx: [
-    { name: "pin", at: T.pinIn },
-    { name: "slice", at: T.cutMark },
-    { name: "whoosh", at: T.zoom, dur: ZOOM_LEN },
     { name: "pause", at: T.pause1 },
     { name: "click", at: T.dragStart },
     { name: "release", at: T.dragEnd },
@@ -1797,6 +1877,13 @@ const cues = {
     { name: "tock", at: T.askSend },
     { name: "click", at: bcFilm + 0.06 },
     { name: "click", at: filmOfCap(ev["after-click"], bcFilm + 2.4) + 0.06 },
+    // the tour: a whoosh on each cut, and a click wherever the capture clicked inside the shot
+    ...SHOTS.slice(1).map((sh) => ({ name: "whoosh", at: T[`shot_${sh.id}`] - 0.14, dur: 0.16 })),
+    ...SHOTS.flatMap((sh) => {
+      const t0 = T[`shot_${sh.id}`], k = SHOTS.indexOf(sh), t1 = k + 1 < SHOTS.length ? T[`shot_${SHOTS[k + 1].id}`] : T.tourEnd;
+      const clicks = ["fillers", "pauses", "zoom", "captions-karaoke", "captions-neon", "captions-one-word", "captions-pop", "look-teal-orange", "look-film", "look-black-white", "look-warm", "hook", "sound", "broll", "pip", "aspect-9x16", "aspect-1x1", "aspect-4x5", "aspect-16x9"];
+      return clicks.filter((n) => tev[n] !== undefined && tev[n] - 0.06 > sh.c0 && tev[n] - 0.06 < sh.c1).map((n) => ({ name: "click", at: t0 + ((tev[n] - 0.06 - sh.c0) / (sh.c1 - sh.c0)) * (t1 - t0) }));
+    }),
     { name: "pin", at: T.exit + 0.75 },
     { name: "slice", at: T.exit + 1.2 },
   ],
