@@ -115,15 +115,34 @@ const voTakes = readdirSync(OUT).filter((f) => /^vo-\w+\.json$/.test(f)).map((f)
 const VO_GUESS: Record<string, number> = { launch: 1.5, rough: 1.1, notes: 2.6, claude: 2.0, what: 4.4, point: 2.3, ask: 1.2, three: 2.7, review: 1.8, name: 0.7, tagline: 2.3, turn: 0.8 };
 /** When the line's last word ends, in the slowest take. */
 const voEnd = (id: string) => (voTakes.length ? Math.max(...voTakes.map((v) => v.lines[id]?.end ?? VO_GUESS[id])) : VO_GUESS[id]);
+// Reed's picture-in-picture lines (pip.mts): after "...and Claude fixes it" he stays on in a bubble
+// and presents the rest himself, so the reveal, the review and the tour are sized to his reads.
+type PipLine = { clip: string; from: number; to: number; segs: { from: number; to: number }[]; text: string };
+const pip = existsSync(join(OUT, "pip.json")) ? (JSON.parse(readFileSync(join(OUT, "pip.json"), "utf8")) as { lines: Record<string, PipLine>; fps: Record<string, number> }) : null;
+const REED = !!pip;
+// a line's length on screen: its pieces back to back (its long pauses are cut down)
+const pipLen = (id: string) => (pip?.lines[id] ? pip.lines[id].segs.reduce((a, g) => a + g.to - g.from, 0) : 0);
+/** The clip time for a moment `dt` seconds into line `id` (past its end, the clip just runs on). */
+function pipClipTime(id: string, dt: number) {
+  const segs = pip!.lines[id].segs;
+  if (dt <= 0) return Math.max(0, segs[0].from + dt);
+  for (const g of segs) {
+    if (dt < g.to - g.from) return g.from + dt;
+    dt -= g.to - g.from;
+  }
+  return segs.at(-1)!.to + dt;
+}
+// which of Reed's lines plays over which tour shot (his b-roll line runs on over the PiP shot)
+const PIP_OF: Record<string, string> = { tPalette: "rPalette", tFillers: "rFillers", tZoom: "rZoom", tCaptions: "rCaptions", tLooks: "rLooks", tHook: "rHook", tSound: "rSound", tBroll: "rBroll", tVoice: "rVoice", tExport: "rExport" };
 /** When word k of the line starts, in the slowest take. */
 const voWord = (id: string, k: number) => (voTakes.length ? Math.max(...voTakes.map((v) => v.lines[id]?.words[k]?.s ?? 0)) : 0);
 
 // ---------------------------------------------------------------- inner film (genuine exports)
-function decode(state: string, size: string, fps = INNER_FPS, extra = "", key = state) {
+function decode(state: string, size: string, fps = INNER_FPS, extra = "", key = state, src = join(OUT, "states", `${state}.mp4`)) {
   const d = join(OUT, "frames", key);
   if (!existsSync(d) || readdirSync(d).length < 5) {
     mkdirSync(d, { recursive: true });
-    execFileSync("ffmpeg", ["-v", "error", "-y", "-i", join(OUT, "states", `${state}.mp4`), "-vf", `${extra}fps=${fps},scale=${size}:flags=lanczos`, "-q:v", "2", join(d, "%05d.jpg")]);
+    execFileSync("ffmpeg", ["-v", "error", "-y", "-i", src, "-vf", `${extra}fps=${fps},scale=${size}:flags=lanczos`, "-q:v", "2", join(d, "%05d.jpg")]);
   }
   const n = readdirSync(d).length;
   return { n, at: (tl: number) => join(d, `${String(Math.min(n - 1, Math.max(0, Math.floor(tl * fps + 1e-6))) + 1).padStart(5, "0")}.jpg`), frame: (k: number) => join(d, `${String(Math.min(n - 1, Math.max(0, k)) + 1).padStart(5, "0")}.jpg`) };
@@ -159,9 +178,10 @@ const EXIT_LEN = 2.8;
 const TOUR_IDS = ["tPalette", "tFillers", "tZoom", "tCaptions", "tLooks", "tHook", "tSound", "tBroll", "tPip", "tVoice", "tExport"];
 const TOUR_MIN: Record<string, number> = { tPalette: 1.6, tFillers: 1.3, tPauses: 1.3, tZoom: 1.3, tCaptions: 1.8, tLooks: 1.5, tHook: 1.8, tSound: 1.2, tBroll: 1.5, tPip: 1.3, tVoice: 2.0, tExport: 2.6 };
 function tourShotLen(id: string) {
+  const len = (k: string) => (REED ? pipLen(PIP_OF[k]) : voEnd(k));
   if (id === "tBroll") return TOUR_MIN.tBroll;
-  if (id === "tPip") return Math.max(TOUR_MIN.tPip, voEnd("tBroll") - TOUR_MIN.tBroll + 0.35);
-  return Math.max(TOUR_MIN[id], voEnd(id) + 0.32);
+  if (id === "tPip") return Math.max(TOUR_MIN.tPip, len("tBroll") - TOUR_MIN.tBroll + (REED ? 0.2 : 0.35));
+  return Math.max(TOUR_MIN[id], len(id) + (REED ? 0.16 : 0.32));
 } // the end card dissolves to its waiting dot, which is cut back into the mark
 const T = (() => {
   const t: Record<string, number> = {};
@@ -213,19 +233,28 @@ const T = (() => {
   mark("snap", 0.45);
   mark("final", FINAL_LEN);
   mark("finalEnd", 0.15);
-  mark("reveal"); t.voThree = at + 1.0;
-  at += Math.max(4.2, 1.0 + voEnd("three") + 0.5);
+  mark("reveal");
+  if (REED) {
+    t.pip_rThree = at + 0.9;
+    at += Math.max(4.2, 0.9 + pipLen("rThree") + 0.35);
+  } else {
+    t.voThree = at + 1.0;
+    at += Math.max(4.2, 1.0 + voEnd("three") + 0.5);
+  }
   // review: the push-in, then Before and After, the narrator's line over both
-  mark("review"); t.voReview = at + 0.15;
+  mark("review");
+  t[REED ? "pip_rReview" : "voReview"] = at + 0.15;
   t.reviewPre = 0.4;
   const bc = ev["before-click"] ?? 0, ac = ev["after-click"] ?? bc + 2;
-  at += Math.max(4.2, t.reviewPre + (ac - bc) + 1.2, 0.15 + voEnd("review") + 0.5);
+  at += Math.max(4.2, t.reviewPre + (ac - bc) + 1.2, 0.15 + (REED ? pipLen("rReview") : voEnd("review")) + 0.5);
   // the tour: the editor's other tools, one shot per line, each as long as its line needs
   mark("tour");
   if (tourCap) {
     for (const id of TOUR_IDS) {
       t[`shot_${id}`] = at;
-      if (id !== "tPip") t[`vo${id[0].toUpperCase()}${id.slice(1)}`] = at + 0.08;
+      if (REED) {
+        if (PIP_OF[id]) t[`pip_${PIP_OF[id]}`] = at + 0.08;
+      } else if (id !== "tPip") t[`vo${id[0].toUpperCase()}${id.slice(1)}`] = at + 0.08;
       at += tourShotLen(id);
     }
   }
@@ -1363,8 +1392,10 @@ async function act5(t: number) {
         x.stroke();
       }
     }
-    line("", W / 2, 984, 52, t, T.voThree - 0.05, { leave: T.review - 0.35, runs: [{ text: "Three notes. No timelines were harmed.", color: "gradient" }] });
-    line("", W / 2, 1044, 40, t, T.voThree + 0.6, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Claude made every change, over MCP.", color: SOFT }] });
+    const at3 = REED ? T.pip_rThree : T.voThree;
+    line("", CAP_CX, 984, 52, t, at3 - 0.05, { leave: T.review - 0.35, runs: [{ text: REED ? "Three notes. I never opened a timeline." : "Three notes. No timelines were harmed.", color: "gradient" }] });
+    line("", CAP_CX, 1044, 40, t, at3 + 0.6, { weight: 500, leave: T.review - 0.35, runs: [{ text: "Claude made every change, over MCP.", color: SOFT }] });
+    await drawPip(t);
   } else {
     // review it like a pull request: the real Before/After, pushed in on what changed
     const u = inOut(prog(t, T.review, 0.8));
@@ -1452,9 +1483,90 @@ async function act5(t: number) {
     g.addColorStop(1, `rgba(6,6,7,${(0.95 * fadeOut).toFixed(3)})`);
     x.fillStyle = g;
     x.fillRect(0, H - 250, W, 250);
-    line("", W / 2, 1046, 46, t, T.voReview - 0.05, { leave: T.tour - 0.5, runs: [{ text: "Review it like a pull request. ", color: "gradient" }, { text: "For your face.", color: LIME }] });
+    if (REED) line("", CAP_CX, 1046, 46, t, T.pip_rReview - 0.05, { leave: T.tour - 0.5, runs: [{ text: "It's literally a pull request ", color: "gradient" }, { text: "for my face.", color: LIME }] });
+    else line("", W / 2, 1046, 46, t, T.voReview - 0.05, { leave: T.tour - 0.5, runs: [{ text: "Review it like a pull request. ", color: "gradient" }, { text: "For your face.", color: LIME }] });
+    await drawPip(t);
   }
 }
+
+// ---------------------------------------------------------------- Reed's bubble: he presents the rest himself
+const PIP_SIZE = 360, PIP_X = W - 64 - PIP_SIZE, PIP_Y = H - 88 - PIP_SIZE;
+// captions sit beside the bubble while it's up; on the export shot the bubble moves to the left corner,
+// out of the way of the panel, and the caption follows
+const CAP_CX = REED ? (PIP_X - 40) / 2 + 20 : W / 2;
+const pipLeft = (t: number) => (REED && T.shot_tExport !== undefined ? inOut(prog(t, T.shot_tExport - 0.12, 0.42)) : 0);
+const capCx = (t: number) => lerp(CAP_CX, W - CAP_CX, pipLeft(t));
+const pipDec: Record<string, Dec> = {};
+/** A square around his face (from the 1280×720 take), at the clip's own frame rate. */
+const pipFrames = (clip: string) => (pipDec[clip] ??= decode("", "720:720", Math.round(pip?.fps[clip] ?? 24), "crop=600:600:200:20,", `pip-${clip.replace(/\W/g, "")}`, join(OUT, "pip", clip)));
+const PIP_ORDER = ["rThree", "rReview", ...TOUR_IDS.map((id) => PIP_OF[id]).filter(Boolean)];
+/** The bubble at film time t: the line that's on (or just finished) runs on in its own clip. */
+function pipAt(t: number) {
+  if (!pip) return null;
+  const on = PIP_ORDER.filter((id) => T[`pip_${id}`] !== undefined);
+  let id = on[0];
+  for (const k of on) if (T[`pip_${k}`] <= t) id = k;
+  if (!id) return null;
+  return { clip: pip.lines[id].clip, ct: pipClipTime(id, t - T[`pip_${id}`]) };
+}
+async function drawPip(t: number) {
+  if (!REED) return;
+  const inU = expo(prog(t, T.reveal + 0.55, 0.42)), outU = inOut(prog(t, T.tourEnd - 0.3, 0.3));
+  const a = inU * (1 - outU);
+  const st = pipAt(t);
+  if (a <= 0.01 || !st) return;
+  // it grows out of the corner, and shrinks back into it at the end
+  const k = lerp(0.84, 1, inU) * lerp(1, 0.9, outU), size = PIP_SIZE * k, r = 40 * k;
+  const side = pipLeft(t);
+  const px = lerp(PIP_X + PIP_SIZE - size, W - PIP_X - PIP_SIZE, side), py = PIP_Y + PIP_SIZE - size;
+  x.save();
+  x.globalAlpha = a;
+  if (inU < 1) x.filter = `blur(${((1 - inU) * 8).toFixed(1)}px)`;
+  x.shadowColor = "rgba(0,0,0,0.6)";
+  x.shadowBlur = 54;
+  x.shadowOffsetY = 18;
+  rrect(px, py, size, size, r);
+  x.fillStyle = "#0e0d0c";
+  x.fill();
+  x.shadowColor = "transparent";
+  x.save();
+  rrect(px, py, size, size, r);
+  x.clip();
+  x.drawImage(await img(pipFrames(st.clip).at(st.ct)), px, py, size, size);
+  // his name, like a live call
+  mono(17 * k, 600);
+  spacing(2);
+  const tag = "REED", tw = x.measureText(tag).width;
+  rrect(px + 16 * k, py + size - 48 * k, tw + 46 * k, 30 * k, 15 * k);
+  x.fillStyle = "rgba(0,0,0,0.55)";
+  x.fill();
+  x.fillStyle = CORAL;
+  x.beginPath();
+  x.arc(px + 33 * k, py + size - 33 * k, 5 * k, 0, Math.PI * 2);
+  x.fill();
+  x.fillStyle = "#fff";
+  x.fillText(tag, px + 46 * k, py + size - 27 * k);
+  spacing(0);
+  x.restore();
+  x.strokeStyle = "rgba(139,92,255,0.9)";
+  x.lineWidth = 3;
+  rrect(px, py, size, size, r);
+  x.stroke();
+  x.restore();
+}
+const TOUR_REED: Record<string, string> = {
+  tPalette: "Oh, and it's a real editor.",
+  tFillers: "It kills the ums. Ask me how I know.",
+  tZoom: "Punch-ins, for drama.",
+  tCaptions: "Captions, in eight flavors.",
+  tLooks: "Make it moody.",
+  tHook: "A hook, so you don't scroll past me.",
+  tSound: "Studio sound. This is my bedroom.",
+  tBroll: "B-roll.",
+  tPip: "Or picture-in-picture, like me, right now.",
+  tVoice: "Too lazy to type? Just say it.",
+  tExport: "Then export it anywhere. Even Resolve.",
+};
 
 // ---------------------------------------------------------------- the tour: macro shots of the real editor, one tool per line
 type Shot = { id: string; c0: number; c1: number; rect: Box; fill: number; label?: string };
@@ -1518,7 +1630,8 @@ async function actTour(t: number) {
   g.addColorStop(1, "rgba(6,6,7,0.92)");
   x.fillStyle = g;
   x.fillRect(0, H - 260, W, 260);
-  if (sh.label) line("", W / 2, 1030, 62, t, t0 + 0.04, { weight: 700, leave: t1 - 0.16, runs: [{ text: sh.label, color: "gradient" }] });
+  const label = REED ? TOUR_REED[sh.id] : sh.label;
+  if (label) line("", capCx(t), 1030, 62, t, t0 + 0.04, { weight: 700, leave: t1 - 0.16, runs: [{ text: label, color: "gradient" }] });
   // a lime tick for each tool, in the corner: how far through the tour we are
   x.save();
   for (let k = 0; k < SHOTS.length; k++) {
@@ -1528,6 +1641,7 @@ async function actTour(t: number) {
     x.fill();
   }
   x.restore();
+  await drawPip(t);
 }
 
 // ---------------------------------------------------------------- the mark: a note pin with a cut taken out of it
@@ -1852,6 +1966,17 @@ const cues = {
   rewind: { from: T.rewind, to: T.pass2 },
   // the narrator's lines, by id (vo-<take>.json has the files)
   vo: ["launch", "rough", "notes", "claude", "what", "point", "ask", "three", "review", ...TOUR_IDS.filter((id) => id !== "tPip"), "name", "tagline", "turn"].map((id) => ({ id, at: T[`vo${id[0].toUpperCase()}${id.slice(1)}`] })).filter((v) => v.at !== undefined),
+  // Reed in his bubble: each line from its clip
+  pip: REED
+    ? PIP_ORDER.filter((id) => T[`pip_${id}`] !== undefined).flatMap((id) => {
+        let at = T[`pip_${id}`];
+        return pip!.lines[id].segs.map((g) => {
+          const e = { id, file: join(OUT, "pip", pip!.lines[id].clip), from: g.from, len: g.to - g.from, at };
+          at += g.to - g.from;
+          return e;
+        });
+      })
+    : [],
   // Reed's own sound, whenever the film inside the film plays at speed
   sync: [
     { src: "v1", from: 0, len: TL1, at: T.cold },

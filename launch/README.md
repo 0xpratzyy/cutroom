@@ -20,7 +20,7 @@ Needs macOS (SF fonts), ffmpeg, a transcription backend (`cutroom doctor`) and, 
 
 ## Rough Cut
 
-`launch/rough/` makes "Rough Cut", the launch film that edits itself while you watch. It opens on its own stammering rough cut. A narrator leaves notes ("We're not editing it. We're leaving notes."), and Claude makes every edit over MCP: it cuts the false start, reframes the take into a 9:16 Short, then grades and captions it. After the review, a fast tour shows the editor's other tools on the same take, and the end card's waiting dot is cut into the cutroom mark. Every picture state is a real cutroom export or screen capture of the editor, and Reed's own sound plays whenever the film inside the film plays.
+`launch/rough/` makes "Rough Cut", the launch film that edits itself while you watch. It opens on its own stammering rough cut. A narrator leaves notes ("We're not editing it. We're leaving notes."), and Claude makes every edit over MCP: it cuts the false start, reframes the take into a 9:16 Short, then grades and captions it. After "...and Claude fixes it", Reed stays on in a picture-in-picture bubble and walks through the rest himself: the review, then a fast tour of the editor's other tools on the same take. The end card's waiting dot is cut into the cutroom mark. Every picture state is a real cutroom export or screen capture of the editor, and Reed's own sound plays whenever the film inside the film plays.
 
 ```bash
 bash launch/rough/prep-footage.sh take.mp4 <project-dir>   # flatten, upscale, make the project
@@ -28,6 +28,8 @@ npx tsx launch/rough/capture-rough.mts <project-dir>        # drive the editor; 
 npx tsx launch/rough/capture-tour.mts                       # the tour: the editor's other tools, captured
 npx tsx launch/rough/states.mts                             # export each state of the film
 npx tsx launch/rough/vo.mts --take=a                        # the narrator (ELEVENLABS_API_KEY)
+(cd launch/out/rough/pip && grok --permission-mode bypassPermissions --prompt-file ../../../rough/pip-brief.txt)   # Reed's bubble clips (needs pip/reed-ref.png: the take's first frame)
+npx tsx launch/rough/pip.mts                                # find each of Reed's lines in those clips
 npx tsx launch/rough/rough.mts --cues                       # the timeline, its holds sized to the reads
 npx tsx launch/rough/beat.mts --style=a                     # the beat, composed to that timeline
 npx tsx launch/rough/music-rough.mts --sfx-only             # the UI foley
@@ -38,6 +40,7 @@ npx tsx launch/rough/mix.mts --take=a                       # mix, master to -14
 | File | Does |
 |---|---|
 | `rough/vo.mts` | The narrator's lines through ElevenLabs, with word timings; `--take=a` (Chris) or `b` (Laura) |
+| `rough/pip-brief.txt`, `rough/pip.mts` | Reed's picture-in-picture clips (a Grok brief), then each line's place in them, long pauses cut down to a beat |
 | `rough/capture-tour.mts` | Records the tour on a copy of the project: ⌘K, fillers, pauses, a zoom, caption templates, looks, a hook, studio sound, b-roll and PiP, a voice note, export aspects |
 | `rough/rough.mts` | The compositor: cold open, the three notes, the pull-back, the review, the tour, the end card and the exit; writes `cues.json` |
 | `rough/beat.mts` | ElevenLabs Music in two halves that meet at the film's stillness, so the drop lands on the bloom; `--style=a` (hybrid trap) or `b` (electro house) |

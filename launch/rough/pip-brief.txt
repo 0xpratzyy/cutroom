@@ -1,0 +1,10 @@
+Make 4 short talking-head clips of the same man from the reference image reed-ref.png (in the current directory). Use reference_to_video for each clip with first_frame = reed-ref.png and images = [reed-ref.png], aspect_ratio 16:9, resolution_name 720p, duration 14 seconds. Do not pass any preset voice: keep his natural voice, the same casual late-20s male voice for all four clips. Run all four calls at once. Save the results in the current directory as pip-1.mp4, pip-2.mp4, pip-3.mp4 and pip-4.mp4, then print their absolute paths.
+
+Every clip: the same man, the same warm home studio, the same podcast mic, camera locked off (no camera movement). He talks straight to camera like a relaxed, funny creator showing off a tool he likes: dry, a little amused, natural small head movements and hand gestures, a real smile on the jokes. Natural synced speech audio, a short natural pause between sentences. No music, no subtitles, no text on screen.
+
+Clip 1, he says exactly: "Yeah, that was three notes. I never opened a timeline. ... And it's literally a pull request for my face. ... Oh, and it's a real editor."
+Clip 2, he says exactly: "It kills the ums. Ask me how I know. ... Punch-ins, for drama. ... Captions, in eight flavors."
+Clip 3, he says exactly: "Make it moody. ... A hook, so you don't scroll past me. ... Studio sound. This is my bedroom."
+Clip 4, he says exactly: "B-roll. Or picture-in-picture, like me, right now. ... Too lazy to type? Just say it. ... Then export it anywhere. Even Resolve."
+
+If a call fails, retry it once with a simpler prompt, then report the exact error.

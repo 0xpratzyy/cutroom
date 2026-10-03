@@ -18,6 +18,7 @@ const cues = JSON.parse(readFileSync(join(OUT, "cues.json"), "utf8")) as {
   sections: Record<string, number>;
   vo: { id: string; at: number }[];
   sync: { src: string; from: number; len: number; at: number }[];
+  pip?: { id: string; file: string; from: number; len: number; at: number }[];
   sfx: { name: string; at: number; dur?: number; gain?: number }[];
   chimes: { at: number; midi: number }[];
   rewind: { from: number; to: number };
@@ -89,6 +90,13 @@ for (const c of cues.sync) {
   const [s] = decode(join(OUT, "states", `${c.src}.mp4`), 1, c.from, c.len);
   hp(s, 80);
   place([s], c.at, SYNC_RMS / activeRms(s), 6, 30);
+  mark(c.at, c.at + c.len, 1);
+}
+// Reed in his bubble, presenting: his lines from the clips, at the same level as his take
+for (const c of cues.pip ?? []) {
+  const [s] = decode(c.file, 1, c.from, c.len);
+  hp(s, 80);
+  place([s], c.at, SYNC_RMS / activeRms(s), 8, 40);
   mark(c.at, c.at + c.len, 1);
 }
 
